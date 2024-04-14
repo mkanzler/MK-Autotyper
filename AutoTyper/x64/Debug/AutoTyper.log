@@ -5,4 +5,6 @@ C:\Users\Crash\source\repos\AutoTyper\AutoTyper\AutoTyper.cpp(16,24): warning C4
           [
               _Elem=wchar_t
           ]
+C:\Users\Crash\source\repos\AutoTyper\AutoTyper\AutoTyper.cpp(95,42): warning C4101: 'e': unreferenced local variable
+C:\Users\Crash\source\repos\AutoTyper\AutoTyper\AutoTyper.cpp(101,42): warning C4101: 'e': unreferenced local variable
   AutoTyper.vcxproj -> C:\Users\Crash\source\repos\AutoTyper\x64\Debug\MK AutoTyper.exe
