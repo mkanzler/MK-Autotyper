@@ -7,5 +7,9 @@ I couln't find any light way application for Windows which does the same. So I w
 ## Screenshot
 <img src="Screenshots/UI.png" alt="UI" height="350"/>
 
-## Prerequisite:
-None
+## Releases
+https://github.com/mkanzler/MK-Autotyper/releases
+
+## Requirements:
+- English or German keyboard layout => Other layouts are not tested, some special charcters may break this programm
+- Tested on Windows 11 (Should run on other windows versions as well, as this programm has not many dependencies)
