@@ -1,8 +1,8 @@
 # AutoTyper - Data Entry Tool 
 
-Some applications don't allow copy 'n' paste. This application is simulating keystrokes so that it does not look like past.
-So basically it saves a lot of time! Who likes to type text if past for some reason is not working?
-I couln't find any light way application for Windows which does the same. So I wrote this one.
+Certain applications lack support for copy and paste functionality. 
+However, with this application, you can effortlessly simulate keystrokes, eliminating the need for manual typing. It's a real time-saver! 
+After all, who enjoys the tedious task of retyping text? Unable to find a lightweight Windows alternative, I took it upon myself to develop one.
 
 ## Screenshot
 <img src="Screenshots/UI.png" alt="UI" height="350"/>
