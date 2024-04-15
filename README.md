@@ -1,4 +1,4 @@
-# AutoTyper - Data Entry Tool 
+# AutoTyper - Data Entry Tool for Windows
 
 Certain applications lack support for copy and paste functionality. 
 However, with this application, you can effortlessly simulate keystrokes, eliminating the need for manual typing. It's a real time-saver! 
