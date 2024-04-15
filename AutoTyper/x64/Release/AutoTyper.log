@@ -1,16 +1,16 @@
 ﻿  AutoTyper.cpp
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(22,24): warning C4244: 'initializing': conversion from 'const _Elem' to 'char', possible loss of data
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(22,24): warning C4244:         with
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(22,24): warning C4244:         [
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(22,24): warning C4244:             _Elem=wchar_t
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(22,24): warning C4244:         ]
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(47,31): warning C4244: 'argument': conversion from 'SHORT' to 'BYTE', possible loss of data
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(50,31): warning C4244: 'argument': conversion from 'SHORT' to 'BYTE', possible loss of data
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(107,42): warning C4101: 'e': unreferenced local variable
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\AutoTyper\AutoTyper.cpp(113,42): warning C4101: 'e': unreferenced local variable
+C:\Users\Crash\Documents\GitHub\MK-Autotyper\AutoTyper\AutoTyper.cpp(22,24): warning C4244: 'initializing': conversion from 'const _Elem' to 'char', possible loss of data
+          with
+          [
+              _Elem=wchar_t
+          ]
+C:\Users\Crash\Documents\GitHub\MK-Autotyper\AutoTyper\AutoTyper.cpp(47,31): warning C4244: 'argument': conversion from 'SHORT' to 'BYTE', possible loss of data
+C:\Users\Crash\Documents\GitHub\MK-Autotyper\AutoTyper\AutoTyper.cpp(50,31): warning C4244: 'argument': conversion from 'SHORT' to 'BYTE', possible loss of data
+C:\Users\Crash\Documents\GitHub\MK-Autotyper\AutoTyper\AutoTyper.cpp(107,42): warning C4101: 'e': unreferenced local variable
+C:\Users\Crash\Documents\GitHub\MK-Autotyper\AutoTyper\AutoTyper.cpp(113,42): warning C4101: 'e': unreferenced local variable
   Generating code
-  3 of 102 functions ( 2.9%) were compiled, the rest were copied from previous compilation.
+  0 of 107 functions ( 0.0%) were compiled, the rest were copied from previous compilation.
     0 functions were new in current compilation
-    1 functions had inline decision re-evaluated but remain unchanged
+    0 functions had inline decision re-evaluated but remain unchanged
   Finished generating code
-  AutoTyper.vcxproj -> C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\x64\Release\MK AutoTyper.exe
+  AutoTyper.vcxproj -> C:\Users\Crash\Documents\GitHub\MK-Autotyper\x64\Release\MK AutoTyper.exe
