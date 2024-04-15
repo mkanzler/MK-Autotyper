@@ -3,9 +3,15 @@
 #include <iostream> 
 
 
-void PressKey(BYTE keyCode) {
+void PressKey(BYTE keyCode, bool keyCtrl = false, bool keyAlt = false, bool keyShift = false) {
+    if (keyShift) keybd_event(VK_LSHIFT, 0, 0, 0);
+    if (keyCtrl) keybd_event(VK_LCONTROL, 0, 0, 0);
+    if (keyAlt) keybd_event(VK_MENU, 0, 0, 0);
     keybd_event(keyCode, 0, 0, 0); // Press key
     keybd_event(keyCode, 0, KEYEVENTF_KEYUP, 0); // Release key
+    if (keyCtrl) keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
+    if (keyCtrl) keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+    if (keyShift) keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
 }
 
 // Function to simulate keystrokes
@@ -20,22 +26,28 @@ void simulateKeystrokes(const std::wstring& input,const int&keyStrokeDelay, cons
         Sleep(keyStrokeDelay); // Can be adjusted
         switch (c) {
         case 'ü':
-            PressKey(VK_OEM_1); // 'ü'
+            PressKey(VK_OEM_1);
             break;
         case 'ö':
-            PressKey(VK_OEM_3); // 'ö'
+            PressKey(VK_OEM_3);
             break;
         case 'ß':
-            PressKey(VK_OEM_4); // 'ß'
+            PressKey(VK_OEM_4);
             break;
         case '^':
-            PressKey(VK_OEM_5); // '^'
+            PressKey(VK_OEM_5);
             break;
         case '´':
-            PressKey(VK_OEM_6); // '´'
+            PressKey(VK_OEM_6);
             break;
         case 'ä':
-            PressKey(VK_OEM_7); // 'ä'
+            PressKey(VK_OEM_7);
+            break;
+        case '@':
+            PressKey(VkKeyScan('q'), true, true, false);
+            break;
+        case '§':
+            PressKey(VkKeyScan('3'), false, false, true);
             break;
         default:
             if (!isprint(c) && c != '\n') {
