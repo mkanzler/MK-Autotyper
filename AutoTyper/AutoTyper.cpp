@@ -84,6 +84,28 @@ std::wstring getTxtBoxString(HWND txtBox) {
     return input;
 }
 
+int getiInitialDelay() {
+    int iInitialDelay = 1000;
+    try {
+        iInitialDelay = std::stoi(getTxtBoxString(txtInitialDelay));
+    }
+    catch (const std::exception& e) {
+        SetWindowText(txtInitialDelay, L"1000");
+    }
+    return iInitialDelay;
+}
+
+int getIKeyStrokeDelay() {
+    int iKeyStrokeDelay = 10;
+    try {
+        iKeyStrokeDelay = std::stoi(getTxtBoxString(txtKeyStrokeDelay));
+    }
+    catch (const std::exception& e) {
+        SetWindowText(txtKeyStrokeDelay, L"10");
+    }
+    return iKeyStrokeDelay;
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
@@ -99,24 +121,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_COMMAND: {
         switch (LOWORD(wParam)) {
         case 1: { // ID of the button
-            int iKeyStrokeDelay = 10;
-            int iInitialDelay = 1000;
-            try {
-                iKeyStrokeDelay = std::stoi(getTxtBoxString(txtKeyStrokeDelay));
-            }
-            catch (const std::exception& e) {
-                SetWindowText(txtKeyStrokeDelay, L"10");
-            }
-            try {
-                iInitialDelay = std::stoi(getTxtBoxString(txtInitialDelay));
-            }
-            catch (const std::exception& e) {
-                SetWindowText(txtInitialDelay, L"1000");
-            }
-
-            simulateKeystrokes(getTxtBoxString(textboxTypeContent), iKeyStrokeDelay, iInitialDelay);
+            simulateKeystrokes(getTxtBoxString(textboxTypeContent), getIKeyStrokeDelay(), getiInitialDelay());
             break;
-        }
+            }
         }
         break;
     }
@@ -134,8 +141,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
+std::wstring GetClipboardTextW() {
+    OpenClipboard(nullptr);
+    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    wchar_t* pszText = static_cast<wchar_t*>(GlobalLock(hData));
+    std::wstring text(pszText);
+    GlobalUnlock(hData);
+    CloseClipboard();
+    return text;
+}
+// Keyboard hook procedure
+int pressed = 0;
+LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0) {
+        if (wParam == WM_KEYUP) {
+            // Check if Ctrl, Alt, and V are pressed simultaneously
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000 && GetAsyncKeyState(VK_MENU) & 0x8000 && GetAsyncKeyState(VkKeyScan('v')) & 0x8000) {
+                if (pressed == 0) {
+                    //pressed = 1;
+                    simulateKeystrokes(GetClipboardTextW(), getIKeyStrokeDelay(), getiInitialDelay());
+                }
+            }
+        }
+    }
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+// Function to set the keyboard hook
+void setHook() {
+    HHOOK hook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, NULL, 0);
+    if (hook == NULL) {
+        std::cerr << "Failed to set hook!" << std::endl;
+    }
+}
+
 // Entry point of the application
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    setHook(); // Set the keyboard hook
     // Register the window class
     const wchar_t CLASS_NAME[] = L"MK-AutoTyper";
 
@@ -147,8 +189,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     RegisterClass(&wc);
 
     // Create the window
-    HWND hwnd = CreateWindowEx(0, CLASS_NAME, L"MK AutoTyper", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
-
+    HWND hwnd = CreateWindowEx(0, CLASS_NAME, L"MK AutoTyper", WS_MINIMIZEBOX | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
+    ShowWindow(hwnd, SW_HIDE);
     if (hwnd == NULL) {
         return 0;
     }
