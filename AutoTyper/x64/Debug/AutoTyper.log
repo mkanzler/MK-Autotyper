@@ -1,3 +1,0 @@
-﻿C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: The intermediate directory (x64\Debug\) contains files shared from another project (AutoTyper.vcxproj).  This can lead to incorrect clean and rebuild behavior.
-AutoTyper.obj : error LNK2019: unresolved external symbol _CrtDbgReport referenced in function "void * __cdecl std::_Allocate_manually_vector_aligned<struct std::_Default_allocate_traits>(unsigned __int64)" (??$_Allocate_manually_vector_aligned@U_Default_allocate_traits@std@@@std@@YAPEAX_K@Z)
-C:\Users\marcel.kanzler\Documents\GIT Repos\MK-Autotyper\x64\Debug\MK AutoTyper.exe : fatal error LNK1120: 1 unresolved externals
