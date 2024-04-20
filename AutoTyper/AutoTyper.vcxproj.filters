@@ -39,7 +39,7 @@
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
-    <Image Include="small.ico">
+    <Image Include="AutoTyper-Small.ico">
       <Filter>Resource Files</Filter>
     </Image>
     <Image Include="AutoTyper.ico">

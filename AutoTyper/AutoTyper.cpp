@@ -1,7 +1,13 @@
 #include <Windows.h>
 #include <string>
 #include <iostream> 
+#include "resource.h"
 
+
+HWND currentWindow;
+NOTIFYICONDATA g_nid;
+HINSTANCE gHInstance;
+#define UNIQUE_MK_AUTOTYPER L"MK-AutoTyper"
 
 void PressKey(BYTE keyCode, bool keyCtrl = false, bool keyAlt = false, bool keyShift = false) {
     if (keyShift) keybd_event(VK_LSHIFT, 0, 0, 0);
@@ -106,12 +112,43 @@ int getIKeyStrokeDelay() {
     return iKeyStrokeDelay;
 }
 
+// Function to create systray icon
+void CreateSystemTrayIcon(HWND hWnd) {
+    g_nid.cbSize = sizeof(NOTIFYICONDATA);
+    g_nid.hWnd = hWnd;
+    g_nid.uID = 1;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uCallbackMessage = WM_USER + 1;
+    g_nid.hIcon = LoadIcon(gHInstance, MAKEINTRESOURCE(IDI_SMALL));
+    lstrcpy(g_nid.szTip, TEXT("MK AutoTyper"));
+
+    Shell_NotifyIcon(NIM_ADD, &g_nid);
+}
+
+// Function to handle right-click context menu
+void ShowContextMenu(HWND hWnd) {
+    POINT pt;
+    GetCursorPos(&pt);
+
+    HMENU hMenu = CreatePopupMenu();
+    InsertMenu(hMenu, -1, MF_BYPOSITION | MF_STRING, 1, TEXT("Exit"));
+
+    SetForegroundWindow(hWnd); // Set the window as foreground
+    TrackPopupMenu(hMenu, TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
+    DestroyMenu(hMenu);
+}
+
+// Function to remove systray icon
+void RemoveSystemTrayIcon() {
+    Shell_NotifyIcon(NIM_DELETE, &g_nid);
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
         textboxTypeContent = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 10, 10, 760, 500, hwnd, NULL, GetModuleHandle(NULL), NULL);
         CreateWindow(L"BUTTON", L"TYPE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 10, 520, 100, 30, hwnd, (HMENU)1, GetModuleHandle(NULL), NULL);
-        HWND labelKeyStrokeDelay = CreateWindowEx(0, L"STATIC", L"Keystroke delay (ms):", WS_CHILD | WS_VISIBLE,130, 520, 120, 30,hwnd,NULL,GetModuleHandle(NULL),NULL);
+        HWND labelKeyStrokeDelay = CreateWindowEx(0, L"STATIC", L"Keystroke delay (ms):", WS_CHILD | WS_VISIBLE, 130, 520, 120, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         txtKeyStrokeDelay = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"10", WS_CHILD | ES_NUMBER | WS_VISIBLE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 255, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         HWND labelInitialDelay = CreateWindowEx(0, L"STATIC", L"Initial delay (ms):", WS_CHILD | WS_VISIBLE, 385, 520, 120, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         txtInitialDelay = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"1000", WS_CHILD | ES_NUMBER | WS_VISIBLE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 510, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
@@ -120,9 +157,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
     case WM_COMMAND: {
         switch (LOWORD(wParam)) {
-        case 1: { // ID of the button
-            simulateKeystrokes(getTxtBoxString(textboxTypeContent), getIKeyStrokeDelay(), getiInitialDelay());
-            break;
+            case 1: { // ID of the button
+                if (HIWORD(wParam) == 0) {
+                    RemoveSystemTrayIcon();
+                    PostQuitMessage(0);
+                }
+                simulateKeystrokes(getTxtBoxString(textboxTypeContent), getIKeyStrokeDelay(), getiInitialDelay());
+                break;
+            }
+        }
+        break;
+    }
+    case WM_CLOSE: {
+        ShowWindow(currentWindow, SW_HIDE);
+    }
+    case WM_USER+1: { // Systray icon message
+        switch (lParam) {
+            case WM_LBUTTONUP: { // Left click on systray icon
+                ShowWindow(currentWindow, SW_SHOW);
+                ShowWindow(currentWindow, SW_NORMAL);
+                break;
+            }
+            case WM_RBUTTONDOWN: {
+                ShowContextMenu(currentWindow);
             }
         }
         break;
@@ -178,24 +235,49 @@ void setHook() {
 // Entry point of the application
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     setHook(); // Set the keyboard hook
-    // Register the window class
-    const wchar_t CLASS_NAME[] = L"MK-AutoTyper";
+
+    // Attempt to create a named mutex
+    HANDLE hMutex = CreateMutex(NULL, TRUE, UNIQUE_MK_AUTOTYPER);
+    // Check if the mutex already exists
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        HWND hOtherWnd = FindWindow(UNIQUE_MK_AUTOTYPER, NULL);
+
+        ShowWindow(hOtherWnd, SW_SHOW);
+        return 0;
+    }
 
     WNDCLASS wc = {};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
-    wc.lpszClassName = CLASS_NAME;
+    wc.hbrBackground = CreateSolidBrush(RGB(255, 255, 255));
+    gHInstance = hInstance;
+
+    wc.lpszClassName = UNIQUE_MK_AUTOTYPER;
 
     RegisterClass(&wc);
 
     // Create the window
-    HWND hwnd = CreateWindowEx(0, CLASS_NAME, L"MK AutoTyper", WS_MINIMIZEBOX | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
-    ShowWindow(hwnd, SW_HIDE);
-    if (hwnd == NULL) {
+    currentWindow = CreateWindowEx(0, UNIQUE_MK_AUTOTYPER, L"MK AutoTyper", WS_MINIMIZEBOX | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
+    if (currentWindow == NULL) {
         return 0;
     }
+    HICON hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_AUTOTYPER));
+    HICON hIconSmall = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_SMALL));
+    SendMessage(currentWindow, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+    SendMessage(currentWindow, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
+   
 
-    ShowWindow(hwnd, nCmdShow);
+    std::string cmdLine(lpCmdLine);
+
+
+    if (!(cmdLine.find("/tray") != std::string::npos)) {
+        ShowWindow(currentWindow, SW_SHOW);
+    }
+    if ((cmdLine.find("/minimized") != std::string::npos)) {
+        ShowWindow(currentWindow, SW_SHOWMINIMIZED);
+    }
+    CreateSystemTrayIcon(currentWindow);
 
     // Run the message loop
     MSG msg = {};
