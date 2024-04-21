@@ -2,81 +2,49 @@
 #include <string>
 #include <iostream> 
 #include "resource.h"
+#include <atlconv.h>
+#include <tchar.h>
+#include <cassert>
 
 
-HWND currentWindow;
-NOTIFYICONDATA g_nid;
-HINSTANCE gHInstance;
+HWND CURRENT_WINDOW;
+HINSTANCE CURRENT_HINSTANCE;
+NOTIFYICONDATA SYSTRAY_DATA;
 #define UNIQUE_MK_AUTOTYPER L"MK-AutoTyper"
+HWND BTN_TYPE;
 
-void PressKey(BYTE keyCode, bool keyCtrl = false, bool keyAlt = false, bool keyShift = false) {
-    if (keyShift) keybd_event(VK_LSHIFT, 0, 0, 0);
-    if (keyCtrl) keybd_event(VK_LCONTROL, 0, 0, 0);
-    if (keyAlt) keybd_event(VK_MENU, 0, 0, 0);
-    keybd_event(keyCode, 0, 0, 0); // Press key
-    keybd_event(keyCode, 0, KEYEVENTF_KEYUP, 0); // Release key
-    if (keyCtrl) keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
-    if (keyCtrl) keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
-    if (keyShift) keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
+void SendCharacter(TCHAR character) {
+    INPUT keystrokes[2] = {};
+
+    // Keydown event
+    keystrokes[0].type = INPUT_KEYBOARD;
+    keystrokes[0].ki.wVk = 0;
+    keystrokes[0].ki.wScan = character;
+    keystrokes[0].ki.dwFlags = KEYEVENTF_UNICODE;
+
+    // Keyup event
+    keystrokes[1].type = INPUT_KEYBOARD;
+    keystrokes[1].ki.wVk = 0;
+    keystrokes[1].ki.wScan = character;
+    keystrokes[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+
+    // Check if the character is a newline
+    if (character == L'\n') {
+        // Change the character to VK_RETURN
+        keystrokes[0].ki.wVk = VK_RETURN;
+        keystrokes[1].ki.wVk = VK_RETURN;
+    }
+
+    SendInput(2, keystrokes, sizeof(INPUT));
 }
-
 // Function to simulate keystrokes
 void simulateKeystrokes(const std::wstring& input,const int&keyStrokeDelay, const int& initialDelay) {
     Sleep(initialDelay);
     HWND foregroundWindow = GetForegroundWindow();
- 
-    for (char c : input) {
-        if (foregroundWindow != GetForegroundWindow()) {
-            break;
-        }
+    TCHAR* keyChars = W2T((wchar_t*)input.c_str());
+    for (UINT i = 0; i < _tcslen(keyChars); ++i) {
+        SendCharacter(keyChars[i]);
         Sleep(keyStrokeDelay); // Can be adjusted
-        switch (c) {
-        case 'ü':
-            PressKey(VK_OEM_1);
-            break;
-        case 'ö':
-            PressKey(VK_OEM_3);
-            break;
-        case 'ß':
-            PressKey(VK_OEM_4);
-            break;
-        case '^':
-            PressKey(VK_OEM_5);
-            break;
-        case '´':
-            PressKey(VK_OEM_6);
-            break;
-        case 'ä':
-            PressKey(VK_OEM_7);
-            break;
-        case '@':
-            PressKey(VkKeyScan('q'), true, true, false);
-            break;
-        case '§':
-            PressKey(VkKeyScan('3'), false, false, true);
-            break;
-        default:
-            if (!isprint(c) && c != '\n') {
-                continue;
-            }
-            short vkCode = VkKeyScan(c);
-            if ((vkCode & 0x0100) == 0x0100)
-                keybd_event(VK_LSHIFT, 0, 0, 0);
-            if ((vkCode & 0x0200) == 0x0200)
-                keybd_event(VK_LCONTROL, 0, 0, 0);
-            if ((vkCode & 0x0400) == 0x0400)
-                keybd_event(VK_RMENU, 0, 0, 0);
-                keybd_event((byte)(vkCode & 0x00FF), 0, 0, 0);
-                keybd_event((byte)(vkCode & 0x00FF), 0, KEYEVENTF_KEYUP, 0);
-            if ((vkCode & 0x0100) == 0x0100)
-                keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
-            if ((vkCode & 0x0200) == 0x0200)
-                keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
-            if ((vkCode & 0x0400) == 0x0400)
-                keybd_event(VK_RMENU, 0, KEYEVENTF_KEYUP, 0);
-            break;
-        }
-
     }
 }
 
@@ -114,15 +82,15 @@ int getIKeyStrokeDelay() {
 
 // Function to create systray icon
 void CreateSystemTrayIcon(HWND hWnd) {
-    g_nid.cbSize = sizeof(NOTIFYICONDATA);
-    g_nid.hWnd = hWnd;
-    g_nid.uID = 1;
-    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    g_nid.uCallbackMessage = WM_USER + 1;
-    g_nid.hIcon = LoadIcon(gHInstance, MAKEINTRESOURCE(IDI_SMALL));
-    lstrcpy(g_nid.szTip, TEXT("MK AutoTyper"));
+    SYSTRAY_DATA.cbSize = sizeof(NOTIFYICONDATA);
+    SYSTRAY_DATA.hWnd = hWnd;
+    SYSTRAY_DATA.uID = 1;
+    SYSTRAY_DATA.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    SYSTRAY_DATA.uCallbackMessage = WM_USER + 1;
+    SYSTRAY_DATA.hIcon = LoadIcon(CURRENT_HINSTANCE, MAKEINTRESOURCE(IDI_SMALL));
+    lstrcpy(SYSTRAY_DATA.szTip, TEXT("MK AutoTyper"));
 
-    Shell_NotifyIcon(NIM_ADD, &g_nid);
+    Shell_NotifyIcon(NIM_ADD, &SYSTRAY_DATA);
 }
 
 // Function to handle right-click context menu
@@ -140,14 +108,14 @@ void ShowContextMenu(HWND hWnd) {
 
 // Function to remove systray icon
 void RemoveSystemTrayIcon() {
-    Shell_NotifyIcon(NIM_DELETE, &g_nid);
+    Shell_NotifyIcon(NIM_DELETE, &SYSTRAY_DATA);
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
         textboxTypeContent = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 10, 10, 760, 500, hwnd, NULL, GetModuleHandle(NULL), NULL);
-        CreateWindow(L"BUTTON", L"TYPE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 10, 520, 100, 30, hwnd, (HMENU)1, GetModuleHandle(NULL), NULL);
+        BTN_TYPE = CreateWindow(L"BUTTON", L"TYPE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 10, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         HWND labelKeyStrokeDelay = CreateWindowEx(0, L"STATIC", L"Keystroke delay (ms):", WS_CHILD | WS_VISIBLE, 130, 520, 120, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         txtKeyStrokeDelay = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"10", WS_CHILD | ES_NUMBER | WS_VISIBLE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 255, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         HWND labelInitialDelay = CreateWindowEx(0, L"STATIC", L"Initial delay (ms):", WS_CHILD | WS_VISIBLE, 385, 520, 120, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
@@ -162,24 +130,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     RemoveSystemTrayIcon();
                     PostQuitMessage(0);
                 }
-                simulateKeystrokes(getTxtBoxString(textboxTypeContent), getIKeyStrokeDelay(), getiInitialDelay());
                 break;
+            } case BN_CLICKED: {
+                if ((HWND)lParam == BTN_TYPE) {
+                    ShowWindow(CURRENT_WINDOW, SW_HIDE);
+                    simulateKeystrokes(getTxtBoxString(textboxTypeContent), getIKeyStrokeDelay(), getiInitialDelay());
+                    ShowWindow(CURRENT_WINDOW, SW_SHOW);
+                }
             }
         }
         break;
     }
     case WM_CLOSE: {
-        ShowWindow(currentWindow, SW_HIDE);
+        ShowWindow(CURRENT_WINDOW, SW_HIDE);
     }
     case WM_USER+1: { // Systray icon message
         switch (lParam) {
             case WM_LBUTTONUP: { // Left click on systray icon
-                ShowWindow(currentWindow, SW_SHOW);
-                ShowWindow(currentWindow, SW_NORMAL);
+                ShowWindow(CURRENT_WINDOW, SW_SHOW);
+                ShowWindow(CURRENT_WINDOW, SW_NORMAL);
                 break;
             }
             case WM_RBUTTONDOWN: {
-                ShowContextMenu(currentWindow);
+                ShowContextMenu(CURRENT_WINDOW);
             }
         }
         break;
@@ -251,33 +224,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.hbrBackground = CreateSolidBrush(RGB(255, 255, 255));
-    gHInstance = hInstance;
-
+    CURRENT_HINSTANCE = hInstance;
     wc.lpszClassName = UNIQUE_MK_AUTOTYPER;
 
     RegisterClass(&wc);
 
     // Create the window
-    currentWindow = CreateWindowEx(0, UNIQUE_MK_AUTOTYPER, L"MK AutoTyper", WS_MINIMIZEBOX | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
-    if (currentWindow == NULL) {
+    CURRENT_WINDOW = CreateWindowEx(0, UNIQUE_MK_AUTOTYPER, L"MK AutoTyper", WS_MINIMIZEBOX | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
+    if (CURRENT_WINDOW == NULL) {
         return 0;
     }
     HICON hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_AUTOTYPER));
     HICON hIconSmall = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_SMALL));
-    SendMessage(currentWindow, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
-    SendMessage(currentWindow, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
-   
-
+    SendMessage(CURRENT_WINDOW, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+    SendMessage(CURRENT_WINDOW, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
     std::string cmdLine(lpCmdLine);
 
-
     if (!(cmdLine.find("/tray") != std::string::npos)) {
-        ShowWindow(currentWindow, SW_SHOW);
+        ShowWindow(CURRENT_WINDOW, SW_SHOW);
     }
     if ((cmdLine.find("/minimized") != std::string::npos)) {
-        ShowWindow(currentWindow, SW_SHOWMINIMIZED);
+        ShowWindow(CURRENT_WINDOW, SW_SHOWMINIMIZED);
     }
-    CreateSystemTrayIcon(currentWindow);
+    CreateSystemTrayIcon(CURRENT_WINDOW);
 
     // Run the message loop
     MSG msg = {};
@@ -285,6 +254,5 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-
     return 0;
 }
