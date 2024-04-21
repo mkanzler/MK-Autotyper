@@ -43,6 +43,9 @@ void simulateKeystrokes(const std::wstring& input,const int&keyStrokeDelay, cons
     HWND foregroundWindow = GetForegroundWindow();
     TCHAR* keyChars = W2T((wchar_t*)input.c_str());
     for (UINT i = 0; i < _tcslen(keyChars); ++i) {
+        if (foregroundWindow != GetForegroundWindow()) {
+            break;
+        }
         SendCharacter(keyChars[i]);
         Sleep(keyStrokeDelay); // Can be adjusted
     }
@@ -241,7 +244,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::string cmdLine(lpCmdLine);
 
     if (!(cmdLine.find("/tray") != std::string::npos)) {
-        ShowWindow(CURRENT_WINDOW, SW_SHOW);
+        ShowWindow(CURRENT_WINDOW, SW_SHOWDEFAULT);
     }
     if ((cmdLine.find("/minimized") != std::string::npos)) {
         ShowWindow(CURRENT_WINDOW, SW_SHOWMINIMIZED);
