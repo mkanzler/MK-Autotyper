@@ -13,10 +13,11 @@ After all, who enjoys the tedious task of retyping text? Unable to find a lightw
 - Parameter /minimized -> Startup as minimized window
 - Customaziable startup and type delay speed
 - Unicode character support
-- Light way, fast and easy to use
+- Light weight, fast and easy to use
 
 ## Releases
 https://github.com/mkanzler/MK-Autotyper/releases
 
 ## Requirements:
-Should run on most recent Windows versions without any requriements (Tested on Windows 11)
+- Should run on most recent Windows versions without any requriements (Tested on Windows 11)
+- For none unicode mode german or english keyboard layout may be required

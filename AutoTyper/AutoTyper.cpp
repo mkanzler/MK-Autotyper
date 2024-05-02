@@ -6,14 +6,13 @@
 #include <tchar.h>
 #include <cassert>
 
+#define UNIQUE_MK_AUTOTYPER L"MK-AutoTyper"
 
-HWND CURRENT_WINDOW;
 HINSTANCE CURRENT_HINSTANCE;
 NOTIFYICONDATA SYSTRAY_DATA;
-#define UNIQUE_MK_AUTOTYPER L"MK-AutoTyper"
-HWND BTN_TYPE;
+HWND TXTB_TYPE_CONTENT, TXTB_KEY_STROKE_DELAY, TXTB_INITIAL_DELAY, BTN_CHECKBOX_UNICODE, BTN_TYPE, CURRENT_WINDOW;
 
-void SendCharacter(TCHAR character) {
+void send_unicode_character(TCHAR character) {
     INPUT keystrokes[2] = {};
 
     // Keydown event
@@ -34,26 +33,130 @@ void SendCharacter(TCHAR character) {
         keystrokes[0].ki.wVk = VK_RETURN;
         keystrokes[1].ki.wVk = VK_RETURN;
     }
-
     SendInput(2, keystrokes, sizeof(INPUT));
 }
-// Function to simulate keystrokes
-void simulateKeystrokes(const std::wstring& input,const int&keyStrokeDelay, const int& initialDelay) {
-    Sleep(initialDelay);
+
+void send_keybd_character(BYTE keyCode, bool keyCtrl = false, bool keyAlt = false, bool keyShift = false) {
+    if (keyShift) keybd_event(VK_LSHIFT, 0, 0, 0);
+    if (keyCtrl) keybd_event(VK_LCONTROL, 0, 0, 0);
+    if (keyAlt) keybd_event(VK_MENU, 0, 0, 0);
+    keybd_event(keyCode, 0, 0, 0); // Press key
+    keybd_event(keyCode, 0, KEYEVENTF_KEYUP, 0); // Release key
+    if (keyCtrl) keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
+    if (keyCtrl) keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+    if (keyShift) keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
+}
+
+void simulate_keybd_keystrokes(const std::wstring& input, const int& keyStrokeDelay) {
+    HWND foregroundWindow = GetForegroundWindow();
+    for (char32_t c : input) {
+        if (foregroundWindow != GetForegroundWindow()) {
+            break;
+        }
+        switch (c) {
+        case U'ä':
+            send_keybd_character(VK_OEM_7);
+            break;
+        case U'Ä':
+            send_keybd_character(VK_OEM_7,false,false,true);
+            break;
+        case U'ü':
+            send_keybd_character(VK_OEM_1);
+            break;
+        case U'Ü':
+            send_keybd_character(VK_OEM_7, false, false, true);
+            break;
+        case U'ö':
+            send_keybd_character(VK_OEM_3);
+            break;
+        case U'Ö':
+            send_keybd_character(VK_OEM_3, false, false, true);
+            break;
+        case U'ß':
+            send_keybd_character(VK_OEM_4);
+            break;
+        case U'^':
+            send_keybd_character(VK_OEM_5);
+            break;
+        case U'´':
+            send_keybd_character(VK_OEM_6);
+            break;
+        case U'@':
+            send_keybd_character(VkKeyScan('q'), true, true, false);
+            break;
+        case U'§':
+            send_keybd_character(VkKeyScan('3'), false, false, true);
+            break;
+        case U'°':
+            send_keybd_character(VkKeyScan('^'), false, false, true);
+            break;
+        case U'€':
+            send_keybd_character(VkKeyScan('e'), true, true, false);
+            break;
+        case U'²':
+            send_keybd_character(VkKeyScan('2'), true, true, false);
+            break;
+        case U'³':
+            send_keybd_character(VkKeyScan('3'), true, true, false);
+            break;
+        default:
+            if (c == U'\n') {
+                continue;
+            }
+            // Fallback for special characters. Most applications support SendInput but not all do. This seems to be the best way to do this.
+            if (!isprint(c) && c != U'\b' && c != U'\r') {
+                send_unicode_character(c);
+                continue;
+            }
+            short vkCode = VkKeyScan(c);
+            if ((vkCode & 0x0100) == 0x0100)
+                keybd_event(VK_LSHIFT, 0, 0, 0);
+            if ((vkCode & 0x0200) == 0x0200)
+                keybd_event(VK_LCONTROL, 0, 0, 0);
+            if ((vkCode & 0x0400) == 0x0400)
+                keybd_event(VK_RMENU, 0, 0, 0);
+            keybd_event((byte)(vkCode & 0x00FF), 0, 0, 0);
+            keybd_event((byte)(vkCode & 0x00FF), 0, KEYEVENTF_KEYUP, 0);
+            if ((vkCode & 0x0100) == 0x0100)
+                keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
+            if ((vkCode & 0x0200) == 0x0200)
+                keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
+            if ((vkCode & 0x0400) == 0x0400)
+                keybd_event(VK_RMENU, 0, KEYEVENTF_KEYUP, 0);
+            break;
+        }
+        Sleep(keyStrokeDelay);
+    }
+}
+
+int get_btn_checkbox_unicode_state() {
+    return SendMessage(BTN_CHECKBOX_UNICODE, BM_GETCHECK, 0, 0);
+}
+
+void simulate_unicode_keystrokes(const std::wstring& input, const int& keyStrokeDelay) {
     HWND foregroundWindow = GetForegroundWindow();
     TCHAR* keyChars = W2T((wchar_t*)input.c_str());
     for (UINT i = 0; i < _tcslen(keyChars); ++i) {
         if (foregroundWindow != GetForegroundWindow()) {
             break;
         }
-        SendCharacter(keyChars[i]);
-        Sleep(keyStrokeDelay); // Can be adjusted
+        send_unicode_character(keyChars[i]);
+        Sleep(keyStrokeDelay);
     }
 }
 
-// Windows procedure function
-HWND textboxTypeContent, txtKeyStrokeDelay, txtInitialDelay;
-std::wstring getTxtBoxString(HWND txtBox) {
+// Function to handle all keystrokes and chooses between unicode or keybd function
+void simulate_keystrokes(const std::wstring& input,const int&keyStrokeDelay, const int& initialDelay) {
+    Sleep(initialDelay);
+    if (get_btn_checkbox_unicode_state() == 1) {
+        simulate_unicode_keystrokes(input, keyStrokeDelay);
+    }
+    else {
+        simulate_keybd_keystrokes(input, keyStrokeDelay);
+    }
+}
+
+std::wstring get_txtbox_string(HWND txtBox) {
     int length = GetWindowTextLength(txtBox);
     std::wstring buffer(length + 1, L'\0');
     GetWindowText(txtBox, &buffer[0], length + 1);
@@ -61,30 +164,29 @@ std::wstring getTxtBoxString(HWND txtBox) {
     return input;
 }
 
-int getiInitialDelay() {
+int get_initial_delay() {
     int iInitialDelay = 1000;
     try {
-        iInitialDelay = std::stoi(getTxtBoxString(txtInitialDelay));
+        iInitialDelay = std::stoi(get_txtbox_string(TXTB_INITIAL_DELAY));
     }
     catch (const std::exception& e) {
-        SetWindowText(txtInitialDelay, L"1000");
+        SetWindowText(TXTB_INITIAL_DELAY, L"1000");
     }
     return iInitialDelay;
 }
 
-int getIKeyStrokeDelay() {
+int get_keystroke_delay() {
     int iKeyStrokeDelay = 10;
     try {
-        iKeyStrokeDelay = std::stoi(getTxtBoxString(txtKeyStrokeDelay));
+        iKeyStrokeDelay = std::stoi(get_txtbox_string(TXTB_KEY_STROKE_DELAY));
     }
     catch (const std::exception& e) {
-        SetWindowText(txtKeyStrokeDelay, L"10");
+        SetWindowText(TXTB_KEY_STROKE_DELAY, L"10");
     }
     return iKeyStrokeDelay;
 }
 
-// Function to create systray icon
-void CreateSystemTrayIcon(HWND hWnd) {
+void create_system_tray_icon(HWND hWnd) {
     SYSTRAY_DATA.cbSize = sizeof(NOTIFYICONDATA);
     SYSTRAY_DATA.hWnd = hWnd;
     SYSTRAY_DATA.uID = 1;
@@ -97,7 +199,7 @@ void CreateSystemTrayIcon(HWND hWnd) {
 }
 
 // Function to handle right-click context menu
-void ShowContextMenu(HWND hWnd) {
+void show_context_menu(HWND hWnd) {
     POINT pt;
     GetCursorPos(&pt);
 
@@ -109,36 +211,43 @@ void ShowContextMenu(HWND hWnd) {
     DestroyMenu(hMenu);
 }
 
-// Function to remove systray icon
-void RemoveSystemTrayIcon() {
+void remove_system_tray_icon() {
     Shell_NotifyIcon(NIM_DELETE, &SYSTRAY_DATA);
 }
 
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+void switch_btn_checkbox_unicode_state() {
+    int newState = (get_btn_checkbox_unicode_state() == BST_CHECKED) ? BST_UNCHECKED : BST_CHECKED;
+    SendMessage(BTN_CHECKBOX_UNICODE, BM_SETCHECK, newState, 0);
+}
+
+LRESULT CALLBACK window_proc_handler(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
-        textboxTypeContent = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 10, 10, 760, 500, hwnd, NULL, GetModuleHandle(NULL), NULL);
+        TXTB_TYPE_CONTENT = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 10, 10, 760, 500, hwnd, NULL, GetModuleHandle(NULL), NULL);
         BTN_TYPE = CreateWindow(L"BUTTON", L"TYPE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 10, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         HWND labelKeyStrokeDelay = CreateWindowEx(0, L"STATIC", L"Keystroke delay (ms):", WS_CHILD | WS_VISIBLE, 130, 520, 120, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
-        txtKeyStrokeDelay = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"10", WS_CHILD | ES_NUMBER | WS_VISIBLE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 255, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
+        TXTB_KEY_STROKE_DELAY = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"10", WS_CHILD | ES_NUMBER | WS_VISIBLE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 255, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
         HWND labelInitialDelay = CreateWindowEx(0, L"STATIC", L"Initial delay (ms):", WS_CHILD | WS_VISIBLE, 385, 520, 120, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
-        txtInitialDelay = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"1000", WS_CHILD | ES_NUMBER | WS_VISIBLE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 510, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
-
+        TXTB_INITIAL_DELAY = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"1000", WS_CHILD | ES_NUMBER | WS_VISIBLE | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 510, 520, 100, 30, hwnd, NULL, GetModuleHandle(NULL), NULL);
+        BTN_CHECKBOX_UNICODE = CreateWindowEx(0,L"BUTTON", L"Unicode mode", BS_CHECKBOX | WS_VISIBLE | WS_CHILD, 650, 520, 120, 30, hwnd, NULL, NULL, NULL);
         break;
     }
     case WM_COMMAND: {
         switch (LOWORD(wParam)) {
             case 1: { // ID of the button
                 if (HIWORD(wParam) == 0) {
-                    RemoveSystemTrayIcon();
+                    remove_system_tray_icon();
                     PostQuitMessage(0);
                 }
                 break;
             } case BN_CLICKED: {
                 if ((HWND)lParam == BTN_TYPE) {
                     ShowWindow(CURRENT_WINDOW, SW_HIDE);
-                    simulateKeystrokes(getTxtBoxString(textboxTypeContent), getIKeyStrokeDelay(), getiInitialDelay());
+                    simulate_keystrokes(get_txtbox_string(TXTB_TYPE_CONTENT), get_keystroke_delay(), get_initial_delay());
                     ShowWindow(CURRENT_WINDOW, SW_SHOW);
+                }
+                if ((HWND)lParam == BTN_CHECKBOX_UNICODE) {
+                    switch_btn_checkbox_unicode_state();
                 }
             }
         }
@@ -155,7 +264,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 break;
             }
             case WM_RBUTTONDOWN: {
-                ShowContextMenu(CURRENT_WINDOW);
+                show_context_menu(CURRENT_WINDOW);
             }
         }
         break;
@@ -165,8 +274,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         break;
     }
     case WM_CHAR: {
-        SetWindowText(txtInitialDelay, L"1234");
-        SendMessage(textboxTypeContent, EM_SETSEL, 0, -1); // Select all text
+        SetWindowText(TXTB_INITIAL_DELAY, L"1234");
+        SendMessage(TXTB_TYPE_CONTENT, EM_SETSEL, 0, -1); // Select all text
     }
     default:
         return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -174,7 +283,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
-std::wstring GetClipboardTextW() {
+std::wstring get_cliboard_wtext() {
     OpenClipboard(nullptr);
     HANDLE hData = GetClipboardData(CF_UNICODETEXT);
     wchar_t* pszText = static_cast<wchar_t*>(GlobalLock(hData));
@@ -185,14 +294,14 @@ std::wstring GetClipboardTextW() {
 }
 // Keyboard hook procedure
 int pressed = 0;
-LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK keyboard_proc_handler(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0) {
         if (wParam == WM_KEYUP) {
             // Check if Ctrl, Alt, and V are pressed simultaneously
             if (GetAsyncKeyState(VK_CONTROL) & 0x8000 && GetAsyncKeyState(VK_MENU) & 0x8000 && GetAsyncKeyState(VkKeyScan('v')) & 0x8000) {
                 if (pressed == 0) {
                     //pressed = 1;
-                    simulateKeystrokes(GetClipboardTextW(), getIKeyStrokeDelay(), getiInitialDelay());
+                    simulate_keystrokes(get_cliboard_wtext(), get_keystroke_delay(), get_initial_delay());
                 }
             }
         }
@@ -201,8 +310,8 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 // Function to set the keyboard hook
-void setHook() {
-    HHOOK hook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, NULL, 0);
+void set_keyboard_hook() {
+    HHOOK hook = SetWindowsHookEx(WH_KEYBOARD_LL, keyboard_proc_handler, NULL, 0);
     if (hook == NULL) {
         std::cerr << "Failed to set hook!" << std::endl;
     }
@@ -210,21 +319,19 @@ void setHook() {
 
 // Entry point of the application
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    setHook(); // Set the keyboard hook
+    set_keyboard_hook(); // Set the keyboard hook
 
     // Attempt to create a named mutex
     HANDLE hMutex = CreateMutex(NULL, TRUE, UNIQUE_MK_AUTOTYPER);
     // Check if the mutex already exists
-    if (GetLastError() == ERROR_ALREADY_EXISTS)
-    {
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND hOtherWnd = FindWindow(UNIQUE_MK_AUTOTYPER, NULL);
-
         ShowWindow(hOtherWnd, SW_SHOW);
         return 0;
     }
 
     WNDCLASS wc = {};
-    wc.lpfnWndProc = WindowProc;
+    wc.lpfnWndProc = window_proc_handler;
     wc.hInstance = hInstance;
     wc.hbrBackground = CreateSolidBrush(RGB(255, 255, 255));
     CURRENT_HINSTANCE = hInstance;
@@ -249,7 +356,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if ((cmdLine.find("/minimized") != std::string::npos)) {
         ShowWindow(CURRENT_WINDOW, SW_SHOWMINIMIZED);
     }
-    CreateSystemTrayIcon(CURRENT_WINDOW);
+    create_system_tray_icon(CURRENT_WINDOW);
 
     // Run the message loop
     MSG msg = {};
