@@ -36,12 +36,37 @@ void send_unicode_character(TCHAR character) {
     SendInput(2, keystrokes, sizeof(INPUT));
 }
 
+std::wstring get_txtbox_string(HWND txtBox) {
+    int length = GetWindowTextLength(txtBox);
+    std::wstring buffer(length + 1, L'\0');
+    GetWindowText(txtBox, &buffer[0], length + 1);
+    std::wstring input(buffer.begin(), buffer.end());
+    return input;
+}
+
+int get_keystroke_delay() {
+    int iKeyStrokeDelay = 10;
+    try {
+        iKeyStrokeDelay = std::stoi(get_txtbox_string(TXTB_KEY_STROKE_DELAY));
+    }
+    catch (const std::exception& e) {
+        SetWindowText(TXTB_KEY_STROKE_DELAY, L"10");
+    }
+    if (iKeyStrokeDelay < 2) {
+        iKeyStrokeDelay = 2;
+    }
+    return iKeyStrokeDelay;
+}
+
 void send_keybd_character(BYTE keyCode, bool keyCtrl = false, bool keyAlt = false, bool keyShift = false) {
     if (keyShift) keybd_event(VK_LSHIFT, 0, 0, 0);
     if (keyCtrl) keybd_event(VK_LCONTROL, 0, 0, 0);
     if (keyAlt) keybd_event(VK_MENU, 0, 0, 0);
+    int keyStrokeDelay = get_keystroke_delay();
+    Sleep(keyStrokeDelay/2);
     keybd_event(keyCode, 0, 0, 0); // Press key
     keybd_event(keyCode, 0, KEYEVENTF_KEYUP, 0); // Release key
+    Sleep(keyStrokeDelay/2);
     if (keyCtrl) keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
     if (keyCtrl) keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
     if (keyShift) keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
@@ -115,8 +140,10 @@ void simulate_keybd_keystrokes(const std::wstring& input, const int& keyStrokeDe
                 keybd_event(VK_LCONTROL, 0, 0, 0);
             if ((vkCode & 0x0400) == 0x0400)
                 keybd_event(VK_RMENU, 0, 0, 0);
+            Sleep(keyStrokeDelay/2);
             keybd_event((byte)(vkCode & 0x00FF), 0, 0, 0);
             keybd_event((byte)(vkCode & 0x00FF), 0, KEYEVENTF_KEYUP, 0);
+            Sleep(keyStrokeDelay/2);
             if ((vkCode & 0x0100) == 0x0100)
                 keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
             if ((vkCode & 0x0200) == 0x0200)
@@ -125,7 +152,7 @@ void simulate_keybd_keystrokes(const std::wstring& input, const int& keyStrokeDe
                 keybd_event(VK_RMENU, 0, KEYEVENTF_KEYUP, 0);
             break;
         }
-        Sleep(keyStrokeDelay);
+        //Sleep(keyStrokeDelay);
     }
 }
 
@@ -156,13 +183,6 @@ void simulate_keystrokes(const std::wstring& input,const int&keyStrokeDelay, con
     }
 }
 
-std::wstring get_txtbox_string(HWND txtBox) {
-    int length = GetWindowTextLength(txtBox);
-    std::wstring buffer(length + 1, L'\0');
-    GetWindowText(txtBox, &buffer[0], length + 1);
-    std::wstring input(buffer.begin(), buffer.end());
-    return input;
-}
 
 int get_initial_delay() {
     int iInitialDelay = 1000;
@@ -173,17 +193,6 @@ int get_initial_delay() {
         SetWindowText(TXTB_INITIAL_DELAY, L"1000");
     }
     return iInitialDelay;
-}
-
-int get_keystroke_delay() {
-    int iKeyStrokeDelay = 10;
-    try {
-        iKeyStrokeDelay = std::stoi(get_txtbox_string(TXTB_KEY_STROKE_DELAY));
-    }
-    catch (const std::exception& e) {
-        SetWindowText(TXTB_KEY_STROKE_DELAY, L"10");
-    }
-    return iKeyStrokeDelay;
 }
 
 void create_system_tray_icon(HWND hWnd) {
