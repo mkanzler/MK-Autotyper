@@ -5,6 +5,8 @@
 #include <atlconv.h>
 #include <tchar.h>
 #include <cassert>
+#include <vector>
+#include <thread>
 
 #define UNIQUE_MK_AUTOTYPER L"MK-AutoTyper"
 
@@ -58,19 +60,49 @@ int get_keystroke_delay() {
     return iKeyStrokeDelay;
 }
 
-void send_keybd_character(BYTE keyCode, bool keyCtrl = false, bool keyAlt = false, bool keyShift = false) {
-    if (keyShift) keybd_event(VK_LSHIFT, 0, 0, 0);
-    if (keyCtrl) keybd_event(VK_LCONTROL, 0, 0, 0);
-    if (keyAlt) keybd_event(VK_MENU, 0, 0, 0);
+void send_keybd_character(BYTE keyCode, bool keyCtrl = false, bool keyAlt = false, bool keyShift = false, bool keyAltGr = false) {
+    std::vector<INPUT> inputs;
+
+    auto press = [&](WORD vk, DWORD flags = 0) {
+        INPUT in = { 0 };
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = vk;
+        in.ki.dwFlags = flags;
+        // mark right-Alt (AltGr) as extended
+        if (vk == VK_RMENU && !(flags & KEYEVENTF_KEYUP)) {
+            in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        inputs.push_back(in);
+    };
+
+    auto release = [&](WORD vk, DWORD flags = KEYEVENTF_KEYUP) {
+        INPUT in = { 0 };
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = vk;
+        in.ki.dwFlags = flags | (vk == VK_RMENU ? KEYEVENTF_EXTENDEDKEY : 0);
+        inputs.push_back(in);
+    };
+
+    if (keyShift)    press(VK_SHIFT);
+    if (keyCtrl)     press(VK_CONTROL);
+    if (keyAltGr)    press(VK_RMENU);
+    if (keyAlt)      press(VK_MENU);
     int keyStrokeDelay = get_keystroke_delay();
-    Sleep(keyStrokeDelay/2);
-    keybd_event(keyCode, 0, 0, 0); // Press key
-    keybd_event(keyCode, 0, KEYEVENTF_KEYUP, 0); // Release key
-    Sleep(keyStrokeDelay/2);
-    if (keyCtrl) keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
-    if (keyCtrl) keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
-    if (keyShift) keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
+    Sleep(keyStrokeDelay / 2);
+    press(keyCode);
+    release(keyCode);
+    Sleep(keyStrokeDelay / 2);
+
+    if (keyAlt)      release(VK_MENU);
+    if (keyAltGr)    release(VK_RMENU);
+    if (keyCtrl)     release(VK_CONTROL);
+    if (keyShift)    release(VK_SHIFT);
+
+    // stagger inputs if needed
+    UINT sent = SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT));
+    (void)sent; // ignore return
 }
+
 
 void simulate_keybd_keystrokes(const std::wstring& input, const int& keyStrokeDelay) {
     HWND foregroundWindow = GetForegroundWindow();
@@ -102,9 +134,15 @@ void simulate_keybd_keystrokes(const std::wstring& input, const int& keyStrokeDe
             break;
         case U'^':
             send_keybd_character(VK_OEM_5);
+            send_keybd_character(VkKeyScan(' '));
             break;
         case U'´':
             send_keybd_character(VK_OEM_6);
+            send_keybd_character(VkKeyScan(' '));
+            break;
+        case U'\u0060':  // Unicode for `
+            send_keybd_character(VK_OEM_6, false, false, true, false);
+            send_keybd_character(VkKeyScan(' '));
             break;
         case U'@':
             send_keybd_character(VkKeyScan('q'), true, true, false);
@@ -119,10 +157,16 @@ void simulate_keybd_keystrokes(const std::wstring& input, const int& keyStrokeDe
             send_keybd_character(VkKeyScan('e'), true, true, false);
             break;
         case U'²':
-            send_keybd_character(VkKeyScan('2'), true, true, false);
+            send_keybd_character(VkKeyScan('2'), false, false, false, true);
             break;
         case U'³':
-            send_keybd_character(VkKeyScan('3'), true, true, false);
+            send_keybd_character(VkKeyScan('3'), false, false, false, true);
+            break;
+        case U'{':
+            send_keybd_character(VkKeyScan('7'), false, false, false, true);
+            break;
+        case U'}':
+            send_keybd_character(VkKeyScan('0'), false, false, false, true);
             break;
         default:
             if (c == U'\n') {
@@ -301,17 +345,29 @@ std::wstring get_cliboard_wtext() {
     CloseClipboard();
     return text;
 }
+
 // Keyboard hook procedure
-int pressed = 0;
-LRESULT CALLBACK keyboard_proc_handler(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode >= 0) {
-        if (wParam == WM_KEYUP) {
-            // Check if Ctrl, Alt, and V are pressed simultaneously
-            if (GetAsyncKeyState(VK_CONTROL) & 0x8000 && GetAsyncKeyState(VK_MENU) & 0x8000 && GetAsyncKeyState(VkKeyScan('v')) & 0x8000) {
-                if (pressed == 0) {
-                    //pressed = 1;
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        KBDLLHOOKSTRUCT* p = (KBDLLHOOKSTRUCT*)lParam;
+
+        static bool ctrlDown = false;
+        static bool altDown = false;
+
+        if (p->vkCode == VK_CONTROL || p->vkCode == VK_LCONTROL || p->vkCode == VK_RCONTROL) {
+            ctrlDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+        }
+        if (p->vkCode == VK_MENU || p->vkCode == VK_LMENU || p->vkCode == VK_RMENU) {
+            altDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+        }
+
+        if ((wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) && p->vkCode == 'V') {
+            if (ctrlDown && altDown) {
+                std::thread([] {
+                    Sleep(1);
                     simulate_keystrokes(get_cliboard_wtext(), get_keystroke_delay(), get_initial_delay());
-                }
+                    }).detach();
+                    return 1; // Block Ctrl+Alt+V
             }
         }
     }
@@ -320,7 +376,7 @@ LRESULT CALLBACK keyboard_proc_handler(int nCode, WPARAM wParam, LPARAM lParam) 
 
 // Function to set the keyboard hook
 void set_keyboard_hook() {
-    HHOOK hook = SetWindowsHookEx(WH_KEYBOARD_LL, keyboard_proc_handler, NULL, 0);
+    HHOOK hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     if (hook == NULL) {
         std::cerr << "Failed to set hook!" << std::endl;
     }
