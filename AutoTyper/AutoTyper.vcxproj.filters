@@ -24,6 +24,22 @@
     <ClInclude Include="Resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="StartupShortcut.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="WindowPlacement.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Hotkey.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SnippetStore.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SnippetDocument.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SnippetCodec.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="TypingSession.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="AppDialogs.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SnippetSearch.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SecureMemory.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="EncryptedSnippets.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="PasswordDialog.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="TypingTarget.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SessionPanel.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Settings.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="KeyboardInput.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="AutoTyper.h">
       <Filter>Header Files</Filter>
     </ClInclude>
