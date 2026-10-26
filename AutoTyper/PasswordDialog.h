@@ -15,6 +15,7 @@ struct State {
     const RECT* placement = nullptr;
     std::function<encrypted::Result(const secure::Text&, const secure::Text&)> action;
     HWND oldPassword = nullptr, newPassword = nullptr, confirmation = nullptr, error = nullptr;
+    bool sessionUnlock = false;
     bool enterArmed = false;
 };
 
@@ -121,6 +122,8 @@ inline INT_PTR CALLBACK proc(HWND window, UINT message, WPARAM wParam, LPARAM lP
                 ? L"One master password protects all encrypted snippets.\nUse at least 12 characters. It cannot be recovered if lost."
             : state->mode == Mode::change
                 ? L"All encrypted snippets will be updated together.\nThe previous password stays valid if the update fails."
+            : state->sessionUnlock
+                ? L"Enter your master password to unlock encrypted snippets\nfor this session. The password is not remembered."
                 : L"Enter your master password. It is used for this action only.",
             0, 0, 24, 18, 440, 44);
         int y = 78, id = 700;

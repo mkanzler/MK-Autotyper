@@ -33,7 +33,7 @@ With an installed v145 toolchain:
 .\scripts\Build-Release.ps1 -PlatformToolset v145
 ```
 
-The script runs tests, builds both architectures in isolated staging, checks version metadata and produces direct EXEs, ZIP bundles, a source archive, the license, release notes and checksums in `artifacts\v2.0`. It does not commit, tag, upload or publish. See [releasing](releasing.md).
+The script runs tests, builds both architectures in isolated staging, checks version metadata and produces direct EXEs, ZIP bundles, a source archive, the license, release notes and checksums in `artifacts\v2.1`. It does not commit, tag, upload or publish. See [releasing](releasing.md).
 
 ## Tests and formatting
 

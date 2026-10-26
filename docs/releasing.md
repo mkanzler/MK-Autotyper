@@ -18,8 +18,8 @@ Release builds use a static C++ runtime, `asInvoker` permissions and version met
 After local review:
 
 1. Commit and push the intended release source/assets.
-2. Create tag **release-2.0** on that exact commit.
-3. Create a GitHub release using `docs/releases/v2.0.md` for its notes.
+2. Create tag **release-2.1** on that exact commit.
+3. Create a GitHub release using `docs/releases/v2.1.md` for its notes.
 4. Attach both Windows EXEs, both Windows ZIPs, the source ZIP, `LICENSE` and `SHA256SUMS.txt`.
 5. Check README download links, then publish when ready.
 

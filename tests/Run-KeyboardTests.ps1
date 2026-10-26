@@ -19,6 +19,10 @@ cl /nologo /EHsc /W4 /WX /std:c++14 /DUNICODE /D_UNICODE "$source" /Fe:"$testExe
 if errorlevel 1 exit /b 1
 "$testExe"
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /W4 /WX /std:c++14 /DUNICODE /D_UNICODE "$PSScriptRoot\ActionTests.cpp" /Fe:"$build\ActionTests.exe" /Fo:"$build\ActionTests.obj" user32.lib
+if errorlevel 1 exit /b 1
+"$build\ActionTests.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /W4 /WX /std:c++14 /DUNICODE /D_UNICODE "$PSScriptRoot\TypingRuntimeTests.cpp" /Fe:"$build\TypingRuntimeTests.exe" /Fo:"$build\TypingRuntimeTests.obj" user32.lib
 if errorlevel 1 exit /b 1
 "$build\TypingRuntimeTests.exe"

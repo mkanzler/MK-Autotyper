@@ -37,9 +37,11 @@ struct State {
     std::function<bool(settings::Preferences&)> apply;
     std::function<void(HWND)> decorate;
     std::function<void(HWND)> changePassword;
+    std::function<void()> lockVault;
+    std::function<bool()> vaultUnlocked;
     HBRUSH background = nullptr, field = nullptr;
     HWND edit = nullptr, snippetHotkey = nullptr, countdown = nullptr, enter = nullptr, shiftEnter = nullptr;
-    HWND nameFeedback = nullptr, nameCounter = nullptr;
+    HWND nameFeedback = nullptr, nameCounter = nullptr, unlockForSession = nullptr;
     snippets::NameIssue nameProblem = snippets::NameIssue::empty;
 
     ~State() {
@@ -469,7 +471,7 @@ inline INT_PTR CALLBACK proc(HWND window, UINT message, WPARAM wParam, LPARAM lP
         const int listHeight = state->names.empty()
                                    ? 120
                                    : 48 * static_cast<int>(state->names.size() < 5 ? state->names.size() : 5);
-        const int height = state->picker ? listHeight + 220 : state->options ? 544 : 248;
+        const int height = state->picker ? listHeight + 220 : state->options ? 580 : 248;
         RECT owner;
         GetWindowRect(GetParent(window), &owner);
         SetWindowPos(window, nullptr, owner.left + (owner.right - owner.left - px(*state, 500)) / 2,
@@ -507,29 +509,44 @@ inline INT_PTR CALLBACK proc(HWND window, UINT message, WPARAM wParam, LPARAM lP
             state->edit = add(window, *state, HOTKEY_CLASSW, L"", WS_TABSTOP, 500, 24, 53, 440, 30);
             SendMessageW(state->edit, HKM_SETHOTKEY,
                 hotkeyValue(state->draft.hotkeyModifiers, state->draft.hotkeyKey), 0);
-            add(window, *state, L"STATIC",
-                L"Idle: type clipboard. Active: stop typing.\nUse Ctrl/Alt with a key, or a function key / Pause.",
-                0, 0, 24, 95, 440, 44);
-            add(window, *state, L"STATIC", L"Search and type saved snippets", 0, 0, 24, 153, 440, 24);
-            state->snippetHotkey = add(window, *state, HOTKEY_CLASSW, L"", WS_TABSTOP, 504, 24, 184, 440, 30);
+            add(window, *state, L"STATIC", L"Use Ctrl/Alt with a key, or a function key / Pause.", 0, 0, 24,
+                94, 440, 24);
+            add(window, *state, L"STATIC", L"Search and type saved snippets", 0, 0, 24, 125, 440, 24);
+            state->snippetHotkey = add(window, *state, HOTKEY_CLASSW, L"", WS_TABSTOP, 504, 24, 156, 440, 30);
             SendMessageW(state->snippetHotkey, HKM_SETHOTKEY,
                 hotkeyValue(state->draft.snippetHotkeyModifiers, state->draft.snippetHotkeyKey), 0);
-            add(window, *state, L"STATIC", L"Insert line breaks with", 0, 0, 24, 237, 440, 24);
+            add(window, *state, L"STATIC", L"Insert line breaks with", 0, 0, 24, 205, 440, 24);
             state->enter = add(window, *state, L"BUTTON", L"&Enter",
-                BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 501, 24, 267, 200, 28);
+                BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 501, 24, 235, 200, 28);
             state->shiftEnter =
-                add(window, *state, L"BUTTON", L"&Shift+Enter", BS_AUTORADIOBUTTON, 502, 244, 267, 220, 28);
+                add(window, *state, L"BUTTON", L"&Shift+Enter", BS_AUTORADIOBUTTON, 502, 244, 235, 220, 28);
             SendMessageW(
                 state->draft.shiftEnter ? state->shiftEnter : state->enter, BM_SETCHECK, BST_CHECKED, 0);
             state->countdown = add(window, *state, L"BUTTON", L"Show &countdown before typing",
-                BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 503, 24, 317, 440, 30);
+                BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 503, 24, 281, 440, 30);
             SendMessageW(
                 state->countdown, BM_SETCHECK, state->draft.showCountdown ? BST_CHECKED : BST_UNCHECKED, 0);
+            state->unlockForSession =
+                add(window, *state, L"BUTTON", L"Unlock encrypted snippets for this session",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 510, 24, 319, 440, 30);
+            SendMessageW(state->unlockForSession, BM_SETCHECK,
+                state->draft.unlockForSession ? BST_CHECKED : BST_UNCHECKED, 0);
+            add(window, *state, L"STATIC",
+                L"Ask when first needed. Keep unlocked until you lock\n"
+                L"encrypted snippets or exit the app, including in the tray.",
+                0, 0, 24, 357, 440, 44);
             add(window, *state, L"BUTTON", L"Change master password...", WS_TABSTOP | BS_OWNERDRAW, 505, 24,
-                366, 440, 34);
+                410, 216, 34);
+            add(window, *state, L"BUTTON", L"Lock encrypted snippets", WS_TABSTOP | BS_OWNERDRAW, 511, 252,
+                410, 212, 34);
+            const bool unlocked = state->vaultUnlocked && state->vaultUnlocked();
+            EnableWindow(GetDlgItem(window, 511), unlocked);
+            add(window, *state, L"STATIC",
+                unlocked ? L"Encrypted snippets: unlocked for this session" : L"Encrypted snippets: locked",
+                0, 512, 24, 453, 440, 24);
             if (state->decorate)
-                for (HWND child :
-                    {state->edit, state->snippetHotkey, state->enter, state->shiftEnter, state->countdown})
+                for (HWND child : {state->edit, state->snippetHotkey, state->enter, state->shiftEnter,
+                         state->countdown, state->unlockForSession})
                     state->decorate(child);
         } else {
             add(window, *state, L"STATIC", L"Snippet name", 0, 0, 24, 18, 440, 24);
@@ -544,7 +561,7 @@ inline INT_PTR CALLBACK proc(HWND window, UINT message, WPARAM wParam, LPARAM lP
             state->nameFeedback =
                 add(window, *state, L"STATIC", L"", SS_NOPREFIX, NameFeedback, 24, 90, 440, 48);
         }
-        const int buttonsY = state->picker ? listHeight + 120 : state->options ? 445 : 154;
+        const int buttonsY = state->picker ? listHeight + 120 : state->options ? 490 : 154;
         add(window, *state, L"BUTTON", L"Cancel", WS_TABSTOP | BS_OWNERDRAW, IDCANCEL, 244, buttonsY, 100,
             34);
         HWND accept = add(window, *state, L"BUTTON",
@@ -607,8 +624,15 @@ inline INT_PTR CALLBACK proc(HWND window, UINT message, WPARAM wParam, LPARAM lP
             updateNameValidation(window, *state);
             return TRUE;
         }
-        if (LOWORD(wParam) == 505 && state->changePassword) {
-            state->changePassword(window);
+        if ((LOWORD(wParam) == 505 && state->changePassword) || (LOWORD(wParam) == 511 && state->lockVault)) {
+            if (LOWORD(wParam) == 505)
+                state->changePassword(window);
+            else
+                state->lockVault();
+            const bool unlocked = state->vaultUnlocked && state->vaultUnlocked();
+            EnableWindow(GetDlgItem(window, 511), unlocked);
+            SetWindowTextW(GetDlgItem(window, 512),
+                unlocked ? L"Encrypted snippets: unlocked for this session" : L"Encrypted snippets: locked");
             return TRUE;
         }
         if (LOWORD(wParam) == IDCANCEL) {
@@ -643,6 +667,8 @@ inline INT_PTR CALLBACK proc(HWND window, UINT message, WPARAM wParam, LPARAM lP
                 }
                 state->draft.shiftEnter = SendMessageW(state->shiftEnter, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 state->draft.showCountdown = SendMessageW(state->countdown, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                state->draft.unlockForSession =
+                    SendMessageW(state->unlockForSession, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 if (state->apply && !state->apply(state->draft)) {
                     dialogs::message(window, state->style,
                         L"That shortcut could not be registered. It may be reserved or used by another application. Choose another combination, or cancel to restore your previous shortcut.",

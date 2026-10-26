@@ -29,7 +29,8 @@ public:
         join();
     }
 
-    bool start(secure::Text text, keyboard::Options options, Runner run = &keyboard::runSecure) {
+private:
+    template <class Content, class Run> bool startJob(Content text, keyboard::Options options, Run run) {
         if (worker_.joinable())
             return false;
         stop_ = false;
@@ -57,6 +58,16 @@ public:
             return false;
         }
         return true;
+    }
+
+public:
+    bool start(secure::Text text, keyboard::Options options, Runner run = &keyboard::runSecure) {
+        return startJob(std::move(text), options, run);
+    }
+
+    bool start(snippetdocument::Document document, keyboard::Options options) {
+        options = keyboard::optionsFor(document, options);
+        return startJob(std::move(document), options, &keyboard::runDocument);
     }
 
     bool start(std::wstring text, keyboard::Options options, Runner run = &keyboard::runSecure) {

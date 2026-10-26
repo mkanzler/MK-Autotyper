@@ -26,8 +26,8 @@ int main() {
         check(value.theme == settings::ThemeMode::system && value.keystrokeDelay == 10 &&
                   value.initialDelay == 1000,
             "First-run defaults changed");
-        check(value.showCountdown && !value.shiftEnter && value.hotkeyModifiers == (MOD_CONTROL | MOD_ALT) &&
-                  value.hotkeyKey == 'V',
+        check(value.showCountdown && !value.shiftEnter && !value.unlockForSession &&
+                  value.hotkeyModifiers == (MOD_CONTROL | MOD_ALT) && value.hotkeyKey == 'V',
             "New feature defaults wrong");
         check(value.snippetHotkeyModifiers == (MOD_CONTROL | MOD_ALT) && value.snippetHotkeyKey == 'P',
             "Snippet shortcut default wrong");
@@ -93,6 +93,7 @@ int main() {
             "Returning to Windows theme did not persist or was overridden by the legacy value");
         settings::Preferences extended;
         extended.showCountdown = false;
+        extended.unlockForSession = true;
         extended.shiftEnter = true;
         extended.hotkeyModifiers = MOD_CONTROL | MOD_SHIFT;
         extended.hotkeyKey = VK_F8;
@@ -105,7 +106,7 @@ int main() {
         reloaded = settings::load(key.path.c_str());
         check(reloaded.snippetHotkeyModifiers == (MOD_ALT | MOD_SHIFT) && reloaded.snippetHotkeyKey == VK_F9,
             "Snippet shortcut roundtrip failed");
-        check(!reloaded.showCountdown && reloaded.shiftEnter &&
+        check(!reloaded.showCountdown && reloaded.shiftEnter && reloaded.unlockForSession &&
                   reloaded.hotkeyModifiers == (MOD_CONTROL | MOD_SHIFT) && reloaded.hotkeyKey == VK_F8 &&
                   reloaded.position.dpi == 144 && reloaded.position.bounds.left == 120 &&
                   reloaded.position.bounds.bottom == 840,
@@ -123,6 +124,8 @@ int main() {
             raw, L"SnippetHotkeyKey", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&letter), sizeof(letter));
         RegSetValueExW(raw, L"ShowCountdown", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&wrongBoolean),
             sizeof(wrongBoolean));
+        RegSetValueExW(raw, L"UnlockForSession", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&wrongBoolean),
+            sizeof(wrongBoolean));
         RegSetValueExW(raw, L"WindowPosition", 0, REG_BINARY, reinterpret_cast<const BYTE*>(&wrongBoolean),
             sizeof(wrongBoolean));
         RegCloseKey(raw);
@@ -130,7 +133,8 @@ int main() {
         check(reloaded.snippetHotkeyModifiers == (MOD_CONTROL | MOD_ALT) && reloaded.snippetHotkeyKey == 'P',
             "Invalid snippet shortcut did not fall back");
         check(reloaded.hotkeyKey == 'V' && reloaded.hotkeyModifiers == (MOD_CONTROL | MOD_ALT) &&
-                  reloaded.showCountdown && !placement::valid(reloaded.position),
+                  reloaded.showCountdown && !reloaded.unlockForSession &&
+                  !placement::valid(reloaded.position),
             "Invalid extended settings did not fall back");
         std::puts(
             "PASS: per-user settings defaults, light/dark roundtrip, delay boundaries, corrupt values and registry types.");

@@ -1,5 +1,6 @@
 #pragma once
 #include "SecureMemory.h"
+#include "VaultSession.h"
 #include "SnippetStore.h"
 #include <bcrypt.h>
 #include <array>
@@ -76,9 +77,36 @@ struct Algorithm {
     Algorithm& operator=(const Algorithm&) = delete;
 };
 
+// Passwords are borrowed only for the duration of a synchronous store operation.
+// An empty password may use an explicitly supplied unlocked session.
+struct Credentials {
+    const secure::Text& password;
+    VaultSession* session;
+
+    Credentials(const secure::Text& value, VaultSession* unlockedSession = nullptr)
+        : password(value), session(unlockedSession) {}
+};
+
+inline bool deriveMaterial(
+    const secure::Text& password, const std::array<BYTE, 16>& salt, secure::Buffer& material) {
+    material.clear();
+    if (password.empty() || password.size() > 1024)
+        return false;
+    Algorithm hash(BCRYPT_SHA256_ALGORITHM, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+    if (!hash.handle)
+        return false;
+    secure::Buffer derived(32);
+    if (BCryptDeriveKeyPBKDF2(hash.handle, reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(password.data())),
+            static_cast<ULONG>(password.size() * sizeof(wchar_t)), const_cast<PUCHAR>(salt.data()),
+            static_cast<ULONG>(salt.size()), Iterations, derived.data(), 32, 0) < 0)
+        return false;
+    material = std::move(derived);
+    return true;
+}
+
 struct Key {
     Algorithm aes{BCRYPT_AES_ALGORITHM};
-    secure::Buffer object, material{32};
+    secure::Buffer object;
     BCRYPT_KEY_HANDLE handle = nullptr;
 
     ~Key() {
@@ -86,15 +114,8 @@ struct Key {
             BCryptDestroyKey(handle);
     }
 
-    bool derive(const secure::Text& password, const std::array<BYTE, 16>& salt) {
-        if (!aes.handle || password.empty() || password.size() > 1024)
-            return false;
-        Algorithm hash(BCRYPT_SHA256_ALGORITHM, BCRYPT_ALG_HANDLE_HMAC_FLAG);
-        if (!hash.handle ||
-            BCryptDeriveKeyPBKDF2(hash.handle,
-                reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(password.data())),
-                static_cast<ULONG>(password.size() * sizeof(wchar_t)), const_cast<PUCHAR>(salt.data()),
-                static_cast<ULONG>(salt.size()), Iterations, material.data(), 32, 0) < 0)
+    bool initialize(const secure::Buffer& material) {
+        if (!aes.handle || handle || material.size() != 32)
             return false;
         if (BCryptSetProperty(aes.handle, BCRYPT_CHAINING_MODE,
                 reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(BCRYPT_CHAIN_MODE_GCM)),
@@ -105,10 +126,13 @@ struct Key {
                 &received, 0) < 0)
             return false;
         object = secure::Buffer(size);
-        const bool success =
-            BCryptGenerateSymmetricKey(aes.handle, &handle, object.data(), size, material.data(), 32, 0) >= 0;
-        material.clear();
-        return success;
+        return BCryptGenerateSymmetricKey(aes.handle, &handle, object.data(), size, material.data(), 32, 0) >=
+               0;
+    }
+
+    bool derive(const secure::Text& password, const std::array<BYTE, 16>& salt) {
+        secure::Buffer material;
+        return deriveMaterial(password, salt, material) && initialize(material);
     }
 };
 
@@ -339,23 +363,41 @@ class Store {
         create
     };
 
-    // Every content operation authenticates the complete catalog before using it.
-    // The caller owns the key, so it is destroyed at the end of that operation.
-    Result openAuthenticatedVault(Vault& vault, Key& key, const secure::Text& password,
+    // Every operation re-reads and authenticates the complete catalog, including
+    // when a session supplies the key. No decrypted vault or key handle is cached.
+    Result openAuthenticatedVault(Vault& vault, Key& key, const Credentials& credentials,
         MissingVaultPolicy missing = MissingVaultPolicy::reject) const {
+        const auto& password = credentials.password;
         const auto result = read(vault);
         if (result == Result::missing && missing == MissingVaultPolicy::create) {
+            if (password.empty() && credentials.session) {
+                credentials.session->lock();
+                return Result::authentication;
+            }
             if (!validNewPassword(password))
                 return Result::weakPassword;
             if (!random(vault.salt.data(), vault.salt.size()))
                 return Result::cryptoError;
         } else if (result != Result::ok) {
+            if (credentials.session)
+                credentials.session->lock();
             return result;
         }
-        if (!key.derive(password, vault.salt))
+        if (password.empty()) {
+            secure::Buffer material;
+            if (!credentials.session || !credentials.session->restore(vault.salt, material))
+                return Result::authentication;
+            if (!key.initialize(material)) {
+                credentials.session->lock();
+                return Result::cryptoError;
+            }
+        } else if (!key.derive(password, vault.salt))
             return Result::cryptoError;
-        if (result == Result::ok && !authenticate(vault, key))
+        if (result == Result::ok && !authenticate(vault, key)) {
+            if (credentials.session)
+                credentials.session->lock();
             return Result::authentication;
+        }
         return Result::ok;
     }
 
@@ -424,12 +466,27 @@ public:
         return Result::ok;
     }
 
+    Result unlock(const secure::Text& password, VaultSession& session) const {
+        session.lock();
+        Vault vault;
+        const auto result = read(vault);
+        if (result != Result::ok)
+            return result;
+        secure::Buffer material;
+        Key key;
+        if (!deriveMaterial(password, vault.salt, material) || !key.initialize(material))
+            return Result::cryptoError;
+        if (!authenticate(vault, key))
+            return Result::authentication;
+        return session.remember(material, vault.salt) ? Result::ok : Result::cryptoError;
+    }
+
     bool exists() const {
         return !root_.empty() && GetFileAttributesW(path().c_str()) != INVALID_FILE_ATTRIBUTES;
     }
 
     Result load(
-        const std::wstring& name, const secure::Text& password, snippetdocument::Document& document) const {
+        const std::wstring& name, const Credentials& password, snippetdocument::Document& document) const {
         document.clear();
         Vault vault;
         Key key;
@@ -446,7 +503,7 @@ public:
     }
 
     Result save(const std::wstring& name, const snippetdocument::Document& document,
-        const secure::Text& password, bool overwrite) const {
+        const Credentials& password, bool overwrite) const {
         if (!snippets::validName(name))
             return Result::invalidName;
         secure::Text encoded;
@@ -480,7 +537,7 @@ public:
     }
 
     Result convert(const std::wstring& name, const snippetdocument::Document& document,
-        const secure::Text& password, bool encryptText, const snippets::Store& plain) const {
+        const Credentials& password, bool encryptText, const snippets::Store& plain) const {
         if (!snippets::validName(name))
             return Result::invalidName;
         secure::Text encoded;
@@ -536,7 +593,7 @@ public:
         return plain.remove(name) == snippets::Result::ok ? removed : Result::rollbackFailed;
     }
 
-    Result load(const std::wstring& name, const secure::Text& password, secure::Text& text) const {
+    Result load(const std::wstring& name, const Credentials& password, secure::Text& text) const {
         text.clear();
         snippetdocument::Document document;
         const auto result = load(name, password, document);
@@ -544,7 +601,7 @@ public:
                                     : result;
     }
 
-    Result save(const std::wstring& name, const secure::Text& text, const secure::Text& password,
+    Result save(const std::wstring& name, const secure::Text& text, const Credentials& password,
         bool overwrite) const {
         if (!validText(text))
             return Result::invalidText;
@@ -552,7 +609,7 @@ public:
         return save(name, document, password, overwrite);
     }
 
-    Result convert(const std::wstring& name, const secure::Text& text, const secure::Text& password,
+    Result convert(const std::wstring& name, const secure::Text& text, const Credentials& password,
         bool encryptText, const snippets::Store& plain) const {
         if (!validText(text))
             return Result::invalidText;
@@ -560,7 +617,7 @@ public:
         return convert(name, document, password, encryptText, plain);
     }
 
-    Result rename(const std::wstring& before, const std::wstring& after, const secure::Text& password) const {
+    Result rename(const std::wstring& before, const std::wstring& after, const Credentials& password) const {
         if (!snippets::validName(after))
             return Result::invalidName;
         snippets::CollectionWriteLock lock(root_ + L"\\Encrypted.dat");
@@ -591,7 +648,7 @@ public:
         return commit(vault, key);
     }
 
-    Result remove(const std::wstring& name, const secure::Text& password) const {
+    Result remove(const std::wstring& name, const Credentials& password) const {
         snippets::CollectionWriteLock lock(root_ + L"\\Encrypted.dat");
         if (root_.empty() || !lock.acquired)
             return Result::ioError;

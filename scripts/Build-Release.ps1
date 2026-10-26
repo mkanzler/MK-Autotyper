@@ -7,8 +7,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
-$version = '2.0'
-$fileVersion = '2.0.0.0'
+$version = '2.1'
+$fileVersion = '2.1.0.0'
 $license = Join-Path $project 'LICENSE'
 if (!(Test-Path -LiteralPath $license)) { throw 'The GPLv3 LICENSE file is required for distribution.' }
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $project "artifacts\v$version" }
@@ -93,6 +93,8 @@ Extract this folder and run MK-AutoTyper.exe. No installation is required.
 Windows 10 version 1607 or later, or Windows 11, is required.
 
 Enter text, choose delays, click Start typing, then focus the destination.
+Use + Add step to add keys, shortcuts or pauses; drag cards to reorder.
+Use variables for fields such as {name}, {date} and {time}.
 Ctrl+Alt+V types clipboard text or stops an active session.
 Ctrl+Alt+P searches saved snippets. Both shortcuts are configurable.
 Closing the window keeps the app in the tray; right-click its icon to Exit.

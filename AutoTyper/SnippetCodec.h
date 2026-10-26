@@ -272,6 +272,43 @@ public:
         return consume(L']');
     }
 
+    bool typing(TypingSettings& output) {
+        if (!consume(L'{'))
+            return false;
+        unsigned fields = 0;
+        do {
+            secure::Text name;
+            if (!string(name) || !consume(L':'))
+                return false;
+            unsigned field = equal(name, L"overrideGlobal")   ? 1
+                             : equal(name, L"unicode")        ? 2
+                             : equal(name, L"keystrokeDelay") ? 4
+                             : equal(name, L"initialDelay")   ? 8
+                                                              : 0;
+            if (!field)
+                return fail(Result::unsupportedVersion);
+            if (fields & field)
+                return false;
+            fields |= field;
+            if (field == 1) {
+                if (!boolean(output.overrideGlobal))
+                    return false;
+            } else if (field == 2) {
+                if (!boolean(output.unicode))
+                    return false;
+            } else {
+                unsigned value = 0;
+                if (!number(value))
+                    return false;
+                if (field == 4)
+                    output.keystrokeDelay = value;
+                else
+                    output.initialDelay = value;
+            }
+        } while (consume(L','));
+        return consume(L'}') && fields == 15;
+    }
+
     bool document(Document& output, bool requireEnd = true) {
         if (!consume(L'{'))
             return false;
@@ -287,6 +324,10 @@ public:
                 field = 2;
             else if (equal(name, L"actions"))
                 field = 4;
+            else if (equal(name, L"typing"))
+                field = 8;
+            else if (equal(name, L"expandVariables"))
+                field = 16;
             else
                 return fail(Result::unsupportedVersion);
             if (fields & field)
@@ -304,10 +345,16 @@ public:
                     return false;
                 if (version != FormatVersion)
                     return fail(Result::unsupportedVersion);
-            } else if (!actions(output))
+            } else if (field == 4) {
+                if (!actions(output))
+                    return false;
+            } else if (field == 8) {
+                if (!typing(output.typing))
+                    return false;
+            } else if (!boolean(output.expandVariables))
                 return false;
         } while (consume(L','));
-        if (!consume(L'}') || fields != 7)
+        if (!consume(L'}') || (fields & 7) != 7)
             return false;
         return !requireEnd || finished();
     }
@@ -399,6 +446,20 @@ public:
     void document(const Document& value) {
         literal(L"{\n  \"format\": \"mk-autotyper-snippet\",\n  \"version\": ");
         number(FormatVersion);
+        if (value.expandVariables)
+            literal(L",\n  \"expandVariables\": true");
+        if (value.typing.overrideGlobal || value.typing.unicode || value.typing.keystrokeDelay != 10 ||
+            value.typing.initialDelay != 1000) {
+            literal(L",\n  \"typing\": {\"overrideGlobal\": ");
+            literal(value.typing.overrideGlobal ? L"true" : L"false");
+            literal(L", \"unicode\": ");
+            literal(value.typing.unicode ? L"true" : L"false");
+            literal(L", \"keystrokeDelay\": ");
+            number(value.typing.keystrokeDelay);
+            literal(L", \"initialDelay\": ");
+            number(value.typing.initialDelay);
+            character(L'}');
+        }
         literal(L",\n  \"actions\": [");
         for (size_t i = 0; i < value.actions.size(); ++i) {
             const auto& action = value.actions[i];

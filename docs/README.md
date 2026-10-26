@@ -6,7 +6,8 @@
 | --- | --- |
 | [User guide](user-guide.md) | Typing, snippets, shortcuts, appearance, startup and troubleshooting |
 | [Security and storage](security.md) | Password protection, local data and limitations |
-| [v2.0 release notes](releases/v2.0.md) | Features, downloads and compatibility |
+| [v2.1 release notes](releases/v2.1.md) | Current features, downloads and compatibility |
+| [v2.0 release notes](releases/v2.0.md) | Previous release |
 
 ## Development
 

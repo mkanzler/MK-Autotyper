@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include "SecureMemory.h"
+#include "SnippetDocument.h"
 #include <atomic>
 #include <functional>
 #include <string>
@@ -12,7 +13,9 @@ enum class Result {
     completed,
     cancelled,
     unsupportedLayout,
-    inputBlocked
+    inputBlocked,
+    shortcutConflict,
+    invalidSequence
 };
 
 inline bool supported(HKL layout) {
@@ -69,6 +72,13 @@ inline std::vector<INPUT> character(
         if (mapping != -1 && (HIBYTE(mapping) & ~7) == 0) {
             const WORD vk = LOBYTE(mapping);
             const BYTE modifiers = HIBYTE(mapping);
+            // German @ needs genuine left Ctrl+Alt+Q for applications that
+            // distinguish Ctrl+Alt from the right-Alt/AltGr key.
+            const WORD altKey =
+                c == L'@' && PRIMARYLANGID(LOWORD(reinterpret_cast<ULONG_PTR>(layout))) == LANG_GERMAN &&
+                        vk == 'Q' && modifiers == 6
+                    ? VK_LMENU
+                    : VK_RMENU;
             // Caps Lock can reverse the shift state of letters, including umlauts.
             for (int attempt = 0; attempt < 2; ++attempt) {
                 const bool shift = ((modifiers & 1) != 0) != (attempt != 0);
@@ -90,10 +100,10 @@ inline std::vector<INPUT> character(
                 if (modifiers & 2)
                     inputs.push_back(key(VK_LCONTROL, layout));
                 if (modifiers & 4)
-                    inputs.push_back(key(VK_RMENU, layout));
+                    inputs.push_back(key(altKey, layout));
                 appendKey(inputs, vk, layout);
                 if (modifiers & 4)
-                    inputs.push_back(key(VK_RMENU, layout, true));
+                    inputs.push_back(key(altKey, layout, true));
                 if (modifiers & 2)
                     inputs.push_back(key(VK_LCONTROL, layout, true));
                 if (shift)
@@ -133,7 +143,8 @@ inline bool pause(DWORD milliseconds, const std::atomic_bool& stop) {
 enum class Stage {
     countdown,
     waitingForKeys,
-    typing
+    typing,
+    pause
 };
 
 struct Progress {
@@ -141,6 +152,8 @@ struct Progress {
     size_t completed = 0, total = 0;
     DWORD remaining = 0;
     ULONGLONG elapsed = 0;
+    bool sequence = false;
+    size_t actionIndex = 0, actionCount = 0;
 };
 
 struct Options {
@@ -160,7 +173,9 @@ inline bool wouldTriggerShortcut(const std::vector<INPUT>& inputs, HKL layout, U
         if (input.ki.dwFlags & KEYEVENTF_UNICODE)
             continue;
         const UINT scan = input.ki.wScan | ((input.ki.dwFlags & KEYEVENTF_EXTENDEDKEY) ? 0xe000 : 0);
-        const UINT vk = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, layout);
+        const UINT vk = (input.ki.dwFlags & KEYEVENTF_SCANCODE)
+                            ? MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, layout)
+                            : input.ki.wVk;
         const bool up = (input.ki.dwFlags & KEYEVENTF_KEYUP) != 0;
         UINT modifier = 0;
         if (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT)
@@ -169,6 +184,8 @@ inline bool wouldTriggerShortcut(const std::vector<INPUT>& inputs, HKL layout, U
             modifier = MOD_CONTROL;
         if (vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU)
             modifier = MOD_ALT;
+        if (vk == VK_LWIN || vk == VK_RWIN)
+            modifier = MOD_WIN;
         if (modifier) {
             if (up)
                 down &= ~modifier;
@@ -259,13 +276,99 @@ inline void normalizePrivate(secure::Text& source) {
     source.length(used);
 }
 
-inline Result runSecure(
-    secure::Text& text, const Options& options, const std::atomic_bool& stop, const Reporter& report = {}) {
+inline Options optionsFor(const snippetdocument::Document& document, Options global) {
+    if (document.typing.overrideGlobal) {
+        global.delay = document.typing.keystrokeDelay;
+        global.initialDelay = document.typing.initialDelay;
+        global.unicode = document.typing.unicode;
+    }
+    return global;
+}
+
+inline std::vector<INPUT> chord(const snippetdocument::KeyStroke& stroke, HKL layout) {
+    std::vector<INPUT> inputs;
+    inputs.reserve(10);
+    auto virtualKey = [&](WORD vk, bool up) {
+        INPUT input{};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = vk;
+        input.ki.dwFlags = (up ? KEYEVENTF_KEYUP : 0);
+        if ((MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC_EX, layout) & 0xff00) == 0xe000)
+            input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+        inputs.push_back(input);
+    };
+    const WORD modifiers[] = {VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN};
+    unsigned mask = stroke.modifiers;
+    const unsigned mainKey =
+        stroke.encoding == snippetdocument::KeyEncoding::virtualKey
+            ? stroke.code
+            : MapVirtualKeyExW(stroke.code | (stroke.extended ? 0xe000 : 0), MAPVK_VSC_TO_VK_EX, layout);
+    if (mainKey == VK_CONTROL || mainKey == VK_LCONTROL || mainKey == VK_RCONTROL)
+        mask &= ~snippetdocument::control;
+    if (mainKey == VK_MENU || mainKey == VK_LMENU || mainKey == VK_RMENU)
+        mask &= ~snippetdocument::alt;
+    if (mainKey == VK_SHIFT || mainKey == VK_LSHIFT || mainKey == VK_RSHIFT)
+        mask &= ~snippetdocument::shift;
+    if (mainKey == VK_LWIN || mainKey == VK_RWIN)
+        mask &= ~snippetdocument::windows;
+    for (unsigned i = 0; i < 4; ++i)
+        if (mask & (1u << i))
+            virtualKey(modifiers[i], false);
+    if (stroke.encoding == snippetdocument::KeyEncoding::scanCode) {
+        INPUT input{};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wScan = static_cast<WORD>(stroke.code);
+        input.ki.dwFlags = KEYEVENTF_SCANCODE | (stroke.extended ? KEYEVENTF_EXTENDEDKEY : 0);
+        inputs.push_back(input);
+        input.ki.dwFlags |= KEYEVENTF_KEYUP;
+        inputs.push_back(input);
+    } else {
+        virtualKey(static_cast<WORD>(stroke.code), false);
+        virtualKey(static_cast<WORD>(stroke.code), true);
+    }
+    for (int i = 3; i >= 0; --i)
+        if (mask & (1u << i))
+            virtualKey(modifiers[i], true);
+    return inputs;
+}
+
+inline bool sendBatch(std::vector<INPUT>& inputs) {
+    const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    if (sent == inputs.size())
+        return true;
+    // A partial batch can leave modifier keys down. Release every accepted down
+    // event in reverse order, using the same encoding and extended-key flags.
+    for (UINT n = sent; n > 0; --n) {
+        INPUT release = inputs[n - 1];
+        if (!(release.ki.dwFlags & KEYEVENTF_KEYUP)) {
+            release.ki.dwFlags |= KEYEVENTF_KEYUP;
+            SendInput(1, &release, sizeof(release));
+        }
+        SecureZeroMemory(&release, sizeof(release));
+    }
+    return false;
+}
+
+struct Step {
+    secure::Text* text = nullptr;
+    snippetdocument::KeyStroke* stroke = nullptr;
+    DWORD milliseconds = 0;
+};
+
+inline Result runSteps(Step* steps, size_t count, const Options& options, const std::atomic_bool& stop,
+    const Reporter& report, bool sequence) {
     if (stop)
         return Result::cancelled;
-    normalizePrivate(text);
     Progress progress;
-    progress.total = characterCount(text);
+    progress.sequence = sequence;
+    progress.actionCount = count;
+    for (size_t n = 0; n < count; ++n) {
+        if (steps[n].text) {
+            normalizePrivate(*steps[n].text);
+            progress.total += characterCount(*steps[n].text);
+        } else if (steps[n].stroke)
+            ++progress.total;
+    }
     ULONGLONG lastReport = 0, typingStarted = 0;
     auto publish = [&](bool force = false) {
         const ULONGLONG now = GetTickCount64();
@@ -313,52 +416,109 @@ inline Result runSecure(
     const HKL layout = GetKeyboardLayout(thread);
     if (!supported(layout))
         return Result::unsupportedLayout;
+    for (size_t n = 0; n < count; ++n) {
+        if (!steps[n].stroke)
+            continue;
+        auto planned = chord(*steps[n].stroke, layout);
+        EventGuard wipe{planned};
+        if (wouldTriggerShortcut(planned, layout, options.hotkeyModifiers, options.triggerKey) ||
+            wouldTriggerShortcut(planned, layout, options.snippetHotkeyModifiers, options.snippetHotkeyKey))
+            return Result::shortcutConflict;
+    }
     typingStarted = GetTickCount64();
     progress.stage = Stage::typing;
     publish(true);
-    for (size_t i = 0; i < text.size(); ++i) {
-        const size_t first = i;
-        // Wait through the modifier prefix of the stop shortcut. Cancelling here
-        // would race its WM_HOTKEY and could inadvertently start another job.
-        if (!safe() || !releaseKeys(false) || GetKeyboardLayout(thread) != layout)
-            return Result::cancelled;
-        progress.stage = Stage::typing;
-        auto inputs = events(text[i], layout, options, (GetKeyState(VK_CAPITAL) & 1) != 0);
-        EventGuard erase{inputs};
-        if (i + 1 < text.size() && surrogatePair(text[i], text[i + 1])) {
-            auto tail = character(text[++i], layout, true, false);
-            EventGuard eraseTail{tail};
-            inputs.insert(inputs.end(), tail.begin(), tail.end());
-        }
-        const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
-        if (sent != inputs.size()) {
-            for (UINT n = sent; n > 0; --n) {
-                INPUT release = inputs[n - 1];
-                if (!(release.ki.dwFlags & KEYEVENTF_KEYUP)) {
-                    release.ki.dwFlags |= KEYEVENTF_KEYUP;
-                    SendInput(1, &release, sizeof(INPUT));
-                }
-                SecureZeroMemory(&release, sizeof(release));
-            }
-            return Result::inputBlocked;
-        }
-        wipeEvents(inputs);
-        SecureZeroMemory(text.writable() + first, (i - first + 1) * sizeof(wchar_t));
-        ++progress.completed;
-        publish(progress.completed == progress.total);
-        if (i + 1 == text.size())
-            break; // Delays separate characters; no trailing wait retains the editor's plaintext.
-        DWORD remaining = options.delay;
+    auto wait = [&](DWORD remaining, Stage stage) {
+        progress.stage = stage;
         while (remaining) {
             if (!safe() || GetKeyboardLayout(thread) != layout)
-                return Result::cancelled;
+                return false;
+            progress.remaining = remaining;
+            publish();
             const DWORD slice = remaining < 10 ? remaining : 10;
             Sleep(slice);
             remaining -= slice;
         }
+        progress.remaining = 0;
+        return safe();
+    };
+    for (size_t n = 0; n < count; ++n) {
+        auto& step = steps[n];
+        progress.actionIndex = n;
+        if (!safe() || !releaseKeys(false) || GetKeyboardLayout(thread) != layout)
+            return Result::cancelled;
+        if (!step.text && !step.stroke) {
+            if (!wait(step.milliseconds, Stage::pause))
+                return Result::cancelled;
+        } else if (step.stroke) {
+            progress.stage = Stage::typing;
+            auto inputs = chord(*step.stroke, layout);
+            EventGuard erase{inputs};
+            if (!sendBatch(inputs))
+                return Result::inputBlocked;
+            SecureZeroMemory(step.stroke, sizeof(*step.stroke));
+            ++progress.completed;
+        } else {
+            auto& text = *step.text;
+            for (size_t i = 0; i < text.size(); ++i) {
+                const size_t first = i;
+                if (!safe() || !releaseKeys(false) || GetKeyboardLayout(thread) != layout)
+                    return Result::cancelled;
+                progress.stage = Stage::typing;
+                auto inputs = events(text[i], layout, options, (GetKeyState(VK_CAPITAL) & 1) != 0);
+                EventGuard erase{inputs};
+                if (i + 1 < text.size() && surrogatePair(text[i], text[i + 1])) {
+                    auto tail = character(text[++i], layout, true, false);
+                    EventGuard eraseTail{tail};
+                    inputs.insert(inputs.end(), tail.begin(), tail.end());
+                }
+                if (!sendBatch(inputs))
+                    return Result::inputBlocked;
+                wipeEvents(inputs);
+                SecureZeroMemory(text.writable() + first, (i - first + 1) * sizeof(wchar_t));
+                ++progress.completed;
+                publish(progress.completed == progress.total);
+                if (i + 1 < text.size() && !wait(options.delay, Stage::typing))
+                    return Result::cancelled;
+            }
+        }
+        progress.actionIndex = n + 1;
+        publish(true);
+        // Empty template fields do not add extra inter-key delays. Explicit
+        // pause steps remain the only timing boundary before the next input.
+        size_t next = n + 1;
+        while (next < count && steps[next].text && steps[next].text->empty())
+            ++next;
+        if (next < count && (step.stroke || (step.text && !step.text->empty())) &&
+            (steps[next].text || steps[next].stroke) && !wait(options.delay, Stage::typing))
+            return Result::cancelled;
     }
     publish(true);
     return Result::completed;
+}
+
+inline Result runSecure(
+    secure::Text& text, const Options& options, const std::atomic_bool& stop, const Reporter& report = {}) {
+    Step step{&text, nullptr, 0};
+    return runSteps(&step, 1, options, stop, report, false);
+}
+
+inline Result runDocument(snippetdocument::Document& document, const Options& options,
+    const std::atomic_bool& stop, const Reporter& report = {}) {
+    if (snippetdocument::validate(document) != snippetdocument::Result::ok || document.expandVariables)
+        return Result::invalidSequence;
+    std::vector<Step> steps;
+    steps.reserve(document.actions.size());
+    for (auto& action : document.actions) {
+        if (action.type == snippetdocument::ActionType::text)
+            steps.push_back({&action.text, nullptr, 0});
+        else if (action.type == snippetdocument::ActionType::key)
+            steps.push_back({nullptr, &action.key, 0});
+        else
+            steps.push_back({nullptr, nullptr, action.milliseconds});
+    }
+    return runSteps(steps.data(), steps.size(), optionsFor(document, options), stop, report,
+        !snippetdocument::textOnly(document));
 }
 
 inline Result run(const std::wstring& source, const Options& options, const std::atomic_bool& stop,

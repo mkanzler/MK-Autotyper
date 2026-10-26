@@ -21,6 +21,8 @@
 #include "PasswordDialog.h"
 #include "SessionPanel.h"
 #include "StartupShortcut.h"
+#include "ActionEditor.h"
+#include "VariableDialog.h"
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "Uxtheme.lib")
@@ -30,7 +32,7 @@ namespace {
 constexpr wchar_t WindowClass[] = L"MK-AutoTyper";
 constexpr UINT TrayMessage = WM_APP + 1;
 constexpr UINT_PTR SessionTimer = 1;
-constexpr int ExitCommand = 100, StopCommand = 101;
+constexpr int ExitCommand = 100, StopCommand = 101, LockVaultCommand = 102;
 
 enum Control {
     Content = 200,
@@ -47,17 +49,29 @@ enum Control {
     SaveSnippet,
     RenameSnippet,
     DeleteSnippet,
-    EncryptSnippet
+    EncryptSnippet,
+    SnippetScope,
+    SnippetManage
 };
+
+constexpr dialogs::MenuCommand SnippetCommands[] = {
+    {RenameSnippet, L"Rename", L"Change the saved snippet name"},
+    {DeleteSnippet, L"Delete", L"Remove the saved snippet"}};
 
 // Main-window state is confined to the UI thread. Session owns the worker state.
 HINSTANCE instance;
 HWND window, contentEdit, delayEdit, initialDelayEdit, scanRadio, unicodeRadio, typeButton, themeButton;
 HWND editorLabel, modeLabel, modeHelp, delayLabel, initialLabel, preferencesNote;
 HWND startupCheck, settingsButton, snippetMenuButton, newSnippetButton, saveSnippetButton,
-    renameSnippetButton, deleteSnippetButton;
+    manageSnippetButton;
 HWND statusLabel, shortcutHint;
-HWND encryptSnippetCheck;
+HWND encryptSnippetCheck, snippetScopeCheck;
+snippetdocument::Document editorDocument;
+bool editorStructureModified = false;
+actioneditor::Editor inlineEditor;
+bool globalUnicode = false, bindingTypingControls = false, inputCaptureActive = false;
+bool snippetSettingsInitialized = false;
+bool captureHadTyping = false, captureHadSearch = false, closing = false;
 NOTIFYICONDATAW tray = {};
 typing_session::Session session;
 hotkey::Registration shortcut;
@@ -65,6 +79,7 @@ hotkey::Registration snippetShortcut(&RegisterHotKey, &UnregisterHotKey, 3);
 sessionview::Panel sessionPanel;
 snippets::Store snippetStore;
 encrypted::Store encryptedStore(snippetStore.directory());
+encrypted::VaultSession vaultSession;
 std::wstring selectedSnippet;
 // The saved source format; the checkbox is the pending format applied by Save.
 // Keeping these separate lets Cancel preserve the existing saved snippet.
@@ -77,6 +92,13 @@ bool darkTheme = false;
 HMENU activeThemeMenu = nullptr;
 dialogs::Style dialogStyle();
 const wchar_t* snippetErrorText(snippets::Result result);
+void lockEncryptedSnippets();
+bool confirmEditorChange();
+bool encryptionChecked();
+void updateEditorActions();
+bool readEditorDocument(snippetdocument::Document& document);
+void refreshTypingControls();
+void captureShortcutInput(bool active);
 std::wstring statusText = L"Ready when you are";
 UINT dpi = 96;
 HFONT bodyFont, smallFont, titleFont, headingFont, editorFont;
@@ -129,11 +151,68 @@ DWORD delayOf(HWND control, DWORD fallback, DWORD minimum) {
     return result;
 }
 
+void syncTypingControls() {
+    if (bindingTypingControls)
+        return;
+    if (editorDocument.typing.overrideGlobal) {
+        auto& custom = editorDocument.typing;
+        const DWORD delay = delayOf(delayEdit, custom.keystrokeDelay, 2);
+        const DWORD initial = delayOf(initialDelayEdit, custom.initialDelay, 0);
+        const bool unicode = SendMessageW(unicodeRadio, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (delay != custom.keystrokeDelay || initial != custom.initialDelay || unicode != custom.unicode)
+            editorStructureModified = true;
+        custom.keystrokeDelay = delay;
+        custom.initialDelay = initial;
+        custom.unicode = unicode;
+    } else if (!initializing) {
+        preferences.keystrokeDelay = delayOf(delayEdit, preferences.keystrokeDelay, 2);
+        preferences.initialDelay = delayOf(initialDelayEdit, preferences.initialDelay, 0);
+    }
+}
+
+void captureShortcutInput(bool active) {
+    if (active == inputCaptureActive)
+        return;
+    inputCaptureActive = active;
+    if (active) {
+        captureHadTyping = shortcut.registered();
+        captureHadSearch = snippetShortcut.registered();
+        shortcut.clear();
+        snippetShortcut.clear();
+    } else if (!closing) {
+        const bool typingRestored =
+            !captureHadTyping || shortcut.replace(window, preferences.hotkeyModifiers, preferences.hotkeyKey);
+        const bool searchRestored =
+            !captureHadSearch ||
+            snippetShortcut.replace(window, preferences.snippetHotkeyModifiers, preferences.snippetHotkeyKey);
+        if (!typingRestored || !searchRestored)
+            statusText = L"Shortcut unavailable - choose another in More settings";
+        InvalidateRect(window, nullptr, FALSE);
+    }
+}
+
+void refreshTypingControls() {
+    bindingTypingControls = true;
+    const auto& custom = editorDocument.typing;
+    SendMessageW(snippetScopeCheck, BM_SETCHECK, custom.overrideGlobal ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(scanRadio, BM_SETCHECK,
+        !(custom.overrideGlobal ? custom.unicode : globalUnicode) ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(unicodeRadio, BM_SETCHECK,
+        (custom.overrideGlobal ? custom.unicode : globalUnicode) ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(delayEdit,
+        std::to_wstring(custom.overrideGlobal ? custom.keystrokeDelay : preferences.keystrokeDelay).c_str());
+    SetWindowTextW(initialDelayEdit,
+        std::to_wstring(custom.overrideGlobal ? custom.initialDelay : preferences.initialDelay).c_str());
+    SetWindowTextW(modeHelp, (custom.overrideGlobal ? custom.unicode : globalUnicode)
+                                 ? L"Sends characters directly using\nWindows Unicode text events."
+                                 : L"Simulates keys using the target's\nEnglish or German keyboard layout.");
+    bindingTypingControls = false;
+}
+
 void persistPreferences() {
     if (initializing)
         return;
-    preferences.keystrokeDelay = delayOf(delayEdit, preferences.keystrokeDelay, 2);
-    preferences.initialDelay = delayOf(initialDelayEdit, preferences.initialDelay, 0);
+    syncTypingControls();
     placement::capture(window, preferences.position);
     if (!settings::save(preferences))
         statusText = L"Settings could not be saved";
@@ -156,7 +235,7 @@ void createFonts() {
     editorFont = font(16, FW_NORMAL, L"Consolas");
     for (HWND control : {delayEdit, initialDelayEdit, scanRadio, unicodeRadio, typeButton, themeButton,
              startupCheck, settingsButton, snippetMenuButton, newSnippetButton, saveSnippetButton,
-             encryptSnippetCheck, renameSnippetButton, deleteSnippetButton})
+             encryptSnippetCheck, manageSnippetButton, snippetScopeCheck})
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
     for (HWND control : {modeLabel, delayLabel, initialLabel, editorLabel})
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
@@ -165,6 +244,7 @@ void createFonts() {
     for (HWND control : {modeHelp, preferencesNote})
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), TRUE);
     SendMessageW(contentEdit, WM_SETFONT, reinterpret_cast<WPARAM>(editorFont), TRUE);
+    inlineEditor.fonts(bodyFont, smallFont, editorFont, dpi);
 }
 
 void applyTheme() {
@@ -190,11 +270,12 @@ void applyTheme() {
     SendMessageW(contentEdit, EM_SETMODIFY, modified, 0);
     const BOOL dark = darkTheme;
     DwmSetWindowAttribute(window, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
-    for (HWND control : {scanRadio, unicodeRadio, startupCheck, encryptSnippetCheck})
+    for (HWND control : {scanRadio, unicodeRadio, startupCheck, encryptSnippetCheck, snippetScopeCheck})
         SetWindowTheme(control, L"", L"");
     SetWindowTextW(themeButton, settings::themeLabel(preferences.theme));
     RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
     const auto style = dialogStyle();
+    inlineEditor.theme(style);
     EnumThreadWindows(
         GetCurrentThreadId(),
         [](HWND child, LPARAM data) -> BOOL {
@@ -205,41 +286,38 @@ void applyTheme() {
         reinterpret_cast<LPARAM>(&style));
 }
 
-void move(HWND control, int x, int y, int width, int height) {
-    MoveWindow(control, scale(x), scale(y), scale(width), scale(height), TRUE);
-}
-
 void layout() {
+    controls::Layout batch(window, dpi);
+    auto move = [&](HWND control, int x, int y, int width, int height) {
+        batch.move(control, x, y, width, height);
+    };
     const int w = logicalWidth(), h = logicalHeight(), side = w - 300;
     move(settingsButton, w - 326, 32, 144, 36);
     move(themeButton, w - 170, 32, 146, 36);
-    move(editorLabel, 44, 138, 180, 24);
     const int available = w - 388;
+    move(editorLabel, 44, 138, std::min(180, available - 338), 24);
     move(encryptSnippetCheck, 44 + available - 326, 134, 170, 32);
-    move(snippetMenuButton, 44, 175, available - 266, 32);
-    move(newSnippetButton, 44 + available - 258, 175, 48, 32);
-    move(saveSnippetButton, 44 + available - 204, 175, 48, 32);
-    move(renameSnippetButton, 44 + available - 150, 175, 66, 32);
-    move(deleteSnippetButton, 44 + available - 78, 175, 78, 32);
-    move(contentEdit, 44, 222, available, std::max(100, h - 340));
-    RECT formatting;
-    GetClientRect(contentEdit, &formatting);
-    InflateRect(&formatting, -scale(2), -scale(2));
-    SendMessageW(contentEdit, EM_SETRECT, 0, reinterpret_cast<LPARAM>(&formatting));
-    move(modeLabel, side + 22, 174, 232, 24);
-    move(scanRadio, side + 22, 200, 232, 36);
-    move(unicodeRadio, side + 22, 242, 232, 36);
-    move(modeHelp, side + 22, 283, 232, 42);
-    move(delayLabel, side + 22, 342, 232, 24);
-    move(delayEdit, side + 34, 379, 208, 22);
-    move(initialLabel, side + 22, 424, 232, 24);
-    move(initialDelayEdit, side + 34, 461, 208, 22);
-    move(startupCheck, side + 22, 502, 232, 32);
-    move(preferencesNote, side + 22, 536, 232, 18);
+    move(snippetMenuButton, 44, 175, available - 240, 32);
+    move(newSnippetButton, 44 + available - 232, 175, 64, 32);
+    move(saveSnippetButton, 44 + available - 160, 175, 64, 32);
+    move(manageSnippetButton, 44 + available - 88, 175, 88, 32);
+    inlineEditor.layout(batch, 44, available, h, dpi);
+    move(snippetScopeCheck, side + 22, 166, 232, 32);
+    move(modeLabel, side + 22, 206, 232, 20);
+    move(scanRadio, side + 22, 232, 232, 32);
+    move(unicodeRadio, side + 22, 270, 232, 32);
+    move(modeHelp, side + 22, 310, 232, 40);
+    move(delayLabel, side + 22, 358, 232, 20);
+    move(delayEdit, side + 34, 386, 208, 24);
+    move(initialLabel, side + 22, 422, 232, 20);
+    move(initialDelayEdit, side + 34, 450, 208, 24);
+    move(startupCheck, side + 22, 494, 232, 32);
+    move(preferencesNote, side + 22, 530, 232, 18);
     move(typeButton, side, h - 68, 276, 44);
     move(statusLabel, 24, h - 70, w - 348, 24);
     move(shortcutHint, 24, h - 43, w - 348, 20);
-    InvalidateRect(window, nullptr, FALSE);
+    batch.apply();
+    inlineEditor.refresh();
 }
 
 void drawText(HDC dc, const std::wstring& text, RECT rect, HFONT typeface, COLORREF color,
@@ -363,13 +441,18 @@ void paint() {
     drawText(dc, L"Your text. One keystroke at a time.", area(85, 62, 400, 20), smallFont, colors.muted);
     roundBox(dc, area(24, 118, w - 348, h - 214), colors.panel, colors.border);
     roundBox(dc, area(side, 118, 276, h - 214), colors.panel, colors.border);
-    roundBox(dc, area(side + 22, 372, 232, 36), colors.field,
+    roundBox(dc, area(side + 22, 380, 232, 36), colors.field,
         GetFocus() == delayEdit ? colors.accent : colors.border, 8);
-    roundBox(dc, area(side + 22, 454, 232, 36), colors.field,
+    roundBox(dc, area(side + 22, 444, 232, 36), colors.field,
         GetFocus() == initialDelayEdit ? colors.accent : colors.border, 8);
     drawText(dc, L"TYPING SETUP", area(side + 22, 136, 232, 22), smallFont, colors.muted);
-    const int length = GetWindowTextLengthW(contentEdit);
-    drawText(dc, std::to_wstring(length) + (length == 1 ? L" character" : L" characters"),
+    const size_t length = inlineEditor.characterCount();
+    const bool singleText = editorDocument.actions.size() == 1 &&
+                            editorDocument.actions[0].type == snippetdocument::ActionType::text;
+    drawText(dc,
+        !singleText ? std::to_wstring(editorDocument.actions.size()) +
+                          (editorDocument.actions.size() == 1 ? L" step" : L" steps")
+                    : std::to_wstring(length) + (length == 1 ? L" character" : L" characters"),
         area(w - 492, 138, 120, 24), smallFont, colors.muted, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     if (typing) {
         RECT track = area(24, h - 89, w - 348, 4);
@@ -391,6 +474,8 @@ void paint() {
 }
 
 LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+    if (message == WM_MOUSEWHEEL && hwnd == contentEdit && inlineEditor.wheel(wParam, lParam))
+        return 0;
     if (message == WM_PAINT && hwnd == contentEdit) {
         const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
         if (!GetWindowTextLengthW(hwnd) && GetFocus() != hwnd) {
@@ -420,17 +505,18 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
         CHARRANGE selection;
         SendMessageW(hwnd, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
         const bool selected = selection.cpMin != selection.cpMax;
+        const bool writable = !(GetWindowLongPtrW(hwnd, GWL_STYLE) & ES_READONLY);
         HMENU menu = CreatePopupMenu();
         auto item = [menu](UINT id, const wchar_t* text, bool enabled) {
             AppendMenuW(menu, MF_STRING | (enabled ? 0 : MF_GRAYED), id, text);
         };
-        item(1, L"Undo\tCtrl+Z", SendMessageW(hwnd, EM_CANUNDO, 0, 0) != 0);
-        item(2, L"Redo\tCtrl+Y", SendMessageW(hwnd, EM_CANREDO, 0, 0) != 0);
+        item(1, L"Undo\tCtrl+Z", writable && SendMessageW(hwnd, EM_CANUNDO, 0, 0) != 0);
+        item(2, L"Redo\tCtrl+Y", writable && SendMessageW(hwnd, EM_CANREDO, 0, 0) != 0);
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        item(3, L"Cut\tCtrl+X", selected);
+        item(3, L"Cut\tCtrl+X", writable && selected);
         item(4, L"Copy\tCtrl+C", selected);
-        item(5, L"Paste\tCtrl+V", IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
-        item(6, L"Delete", selected);
+        item(5, L"Paste\tCtrl+V", writable && IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
+        item(6, L"Delete", writable && selected);
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         item(7, L"Select all\tCtrl+A", GetWindowTextLengthW(hwnd) > 0);
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -587,14 +673,71 @@ bool snippetCatalog(dialogs::State& state) {
     return true;
 }
 
+encrypted::Credentials vaultCredentials(const secure::Text& password) {
+    return {password, preferences.unlockForSession ? &vaultSession : nullptr};
+}
+
+void updateVaultIndicator() {
+    if (!tray.hWnd)
+        return;
+    lstrcpyW(tray.szTip,
+        vaultSession.unlocked() ? L"MK AutoTyper - encrypted snippets unlocked" : L"MK AutoTyper");
+    tray.uFlags = NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &tray);
+}
+
 bool protectedAction(HWND owner, passwords::Mode mode,
     std::function<encrypted::Result(const secure::Text&, const secure::Text&)> action,
     const RECT* placement = nullptr) {
     ModalScope modal;
+    const secure::Text empty;
+    const auto invoke = [&](const secure::Text& password, const secure::Text& next) {
+        try {
+            return action(password, next);
+        } catch (...) {
+            vaultSession.lock();
+            return encrypted::Result::cryptoError;
+        }
+    };
+    if (mode == passwords::Mode::unlock && preferences.unlockForSession && vaultSession.unlocked()) {
+        const auto result = invoke(empty, empty);
+        updateVaultIndicator();
+        if (result == encrypted::Result::ok)
+            return true;
+        // An external password change invalidates the cached key. Ask again;
+        // other errors retain the normal themed error handling without retries.
+        if (result != encrypted::Result::authentication) {
+            showMessage(
+                owner, passwords::errorText(result), L"Encrypted snippets", MB_OK | MB_ICONINFORMATION);
+            return false;
+        }
+    }
     passwords::State state;
     state.ui.style = dialogStyle();
     state.mode = mode;
-    state.action = std::move(action);
+    state.sessionUnlock = preferences.unlockForSession;
+    state.action = [&](const secure::Text& password, const secure::Text& next) {
+        if (mode == passwords::Mode::unlock && preferences.unlockForSession) {
+            const auto unlocked = encryptedStore.unlock(password, vaultSession);
+            if (unlocked != encrypted::Result::ok)
+                return unlocked;
+            return invoke(empty, empty);
+        }
+        const auto result = invoke(password, next);
+        if (result == encrypted::Result::ok && mode != passwords::Mode::unlock) {
+            vaultSession.lock();
+            if (preferences.unlockForSession) {
+                // The vault update already succeeded. A cache failure leaves it
+                // locked and must never report that the committed update failed.
+                try {
+                    encryptedStore.unlock(next, vaultSession);
+                } catch (...) {
+                    vaultSession.lock();
+                }
+            }
+        }
+        return result;
+    };
     state.placement = placement;
     const bool hadTyping = shortcut.registered(), hadSearch = snippetShortcut.registered();
     // Configurable Ctrl+Alt combinations must not consume AltGr characters
@@ -602,6 +745,7 @@ bool protectedAction(HWND owner, passwords::Mode mode,
     shortcut.clear();
     snippetShortcut.clear();
     const bool accepted = passwords::show(owner, state);
+    updateVaultIndicator();
     const bool typingRestored =
         !hadTyping || shortcut.replace(window, preferences.hotkeyModifiers, preferences.hotkeyKey);
     const bool searchRestored =
@@ -614,18 +758,73 @@ bool protectedAction(HWND owner, passwords::Mode mode,
     return accepted;
 }
 
-bool loadSnippetText(
-    const std::wstring& name, bool encrypted, secure::Text& text, const RECT* placement = nullptr) {
+bool withInputDialog(const std::function<bool()>& show) {
+    ModalScope modal;
+    const bool hadTyping = shortcut.registered(), hadSearch = snippetShortcut.registered();
+    shortcut.clear();
+    snippetShortcut.clear();
+    bool accepted = false;
+    try {
+        accepted = show();
+    } catch (...) {
+        showMessage(window, L"The dialog could not be completed.", L"MK AutoTyper", MB_OK | MB_ICONERROR);
+    }
+    const bool restoredTyping =
+        !hadTyping || shortcut.replace(window, preferences.hotkeyModifiers, preferences.hotkeyKey);
+    const bool restoredSearch =
+        !hadSearch ||
+        snippetShortcut.replace(window, preferences.snippetHotkeyModifiers, preferences.snippetHotkeyKey);
+    if (!restoredTyping || !restoredSearch)
+        showMessage(window,
+            L"A shortcut could not be restored. Choose an available combination in More settings.",
+            L"Shortcut unavailable", MB_OK | MB_ICONINFORMATION);
+    return accepted;
+}
+
+bool loadSnippetDocument(const std::wstring& name, bool encrypted, snippetdocument::Document& document,
+    const RECT* placement = nullptr) {
+    document.clear();
     if (encrypted)
         return protectedAction(
             window, passwords::Mode::unlock,
             [&](const secure::Text& password, const secure::Text&) {
-                return encryptedStore.load(name, password, text);
+                return encryptedStore.load(name, vaultCredentials(password), document);
             },
             placement);
-    const auto result = snippetStore.load(name, text);
+    const auto result = snippetStore.load(name, document);
     if (result != snippets::Result::ok) {
         showMessage(window, snippetErrorText(result), L"Snippets", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    return true;
+}
+
+bool prepareDocument(snippetdocument::Document& document, bool encrypted, const RECT* placement = nullptr) {
+    if (snippetdocument::validate(document) != snippetdocument::Result::ok) {
+        showMessage(window, L"This snippet contains invalid steps or typing settings.", L"Snippet",
+            MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    std::vector<snippetvariables::Field> fields;
+    if (snippetvariables::collect(document, fields) != snippetvariables::Result::ok) {
+        showMessage(window, L"Check the variable braces and names in your text steps.", L"Snippet variables",
+            MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    if (!fields.empty()) {
+        variabledialog::State state;
+        state.ui.style = dialogStyle();
+        state.fields = &fields;
+        state.protectedContent = encrypted;
+        state.placement = placement;
+        if (!withInputDialog([&] { return variabledialog::show(window, state); }))
+            return false;
+    }
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    if (snippetvariables::resolve(document, fields, now) != snippetvariables::Result::ok) {
+        showMessage(window, L"The expanded snippet is too large or a field value is invalid.",
+            L"Snippet variables", MB_OK | MB_ICONINFORMATION);
         return false;
     }
     return true;
@@ -742,6 +941,11 @@ void openSettings() {
     state.options = true;
     state.draft = preferences;
     state.changePassword = changeMasterPassword;
+    state.vaultUnlocked = [] { return vaultSession.unlocked(); };
+    state.lockVault = [] {
+        if ((!selectedEncrypted && !encryptionChecked()) || confirmEditorChange())
+            lockEncryptedSnippets();
+    };
     state.decorate = [](HWND child) {
         wchar_t name[64];
         GetClassNameW(child, name, 64);
@@ -761,6 +965,10 @@ void openSettings() {
             shortcut.clear();
             snippetShortcut.clear();
             return false;
+        }
+        if (preferences.unlockForSession && !draft.unlockForSession) {
+            vaultSession.lock();
+            updateVaultIndicator();
         }
         preferences = draft;
         persistPreferences();
@@ -798,9 +1006,26 @@ bool encryptionChecked() {
     return SendMessageW(encryptSnippetCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
 }
 
+bool readEditorDocument(snippetdocument::Document& document) {
+    syncTypingControls();
+    return inlineEditor.read(document);
+}
+
+void setEditorDocument(snippetdocument::Document document, bool modified) {
+    inlineEditor.set(std::move(document));
+    snippetSettingsInitialized = editorDocument.typing.overrideGlobal || editorDocument.typing.unicode ||
+                                 editorDocument.typing.keystrokeDelay != 10 ||
+                                 editorDocument.typing.initialDelay != 1000;
+    editorStructureModified = modified;
+    SendMessageW(contentEdit, EM_SETMODIFY, modified && inlineEditor.textSelected(), 0);
+    refreshTypingControls();
+    updateEditorActions();
+}
+
 bool editorModified() {
-    return GetWindowTextLengthW(contentEdit) > 0 &&
-           (SendMessageW(contentEdit, EM_GETMODIFY, 0, 0) || encryptionChecked() != selectedEncrypted);
+    return inlineEditor.hasContent() &&
+           (editorStructureModified || SendMessageW(contentEdit, EM_GETMODIFY, 0, 0) ||
+               encryptionChecked() != selectedEncrypted);
 }
 
 void updateEditorActions() {
@@ -808,9 +1033,9 @@ void updateEditorActions() {
                                                                : (selectedEncrypted ? L"[Encrypted] " : L"") +
                                                                      menuText(selectedSnippet) + L" \u25be")
                                           .c_str());
-    SetWindowTextW(editorLabel, selectedEncrypted ? L"Encrypted snippet" : L"&Text to type");
-    EnableWindow(renameSnippetButton, !typing && !selectedSnippet.empty());
-    EnableWindow(deleteSnippetButton, !typing && !selectedSnippet.empty());
+    SetWindowTextW(editorLabel, selectedEncrypted ? L"Encrypted snippet" : L"Snippet steps");
+    inlineEditor.enabled(!typing);
+    EnableWindow(manageSnippetButton, !typing && !selectedSnippet.empty());
     const std::wstring title = L"MK AutoTyper" +
                                (selectedSnippet.empty() ? std::wstring{} : L" - " + selectedSnippet) +
                                (editorModified() ? L" *" : L"");
@@ -820,9 +1045,10 @@ void updateEditorActions() {
 void clearProtectedEditor() {
     if (!selectedEncrypted && !encryptionChecked())
         return;
-    SetWindowTextW(contentEdit, L"");
-    SendMessageW(contentEdit, EM_EMPTYUNDOBUFFER, 0, 0);
+    inlineEditor.clear();
+    editorStructureModified = snippetSettingsInitialized = false;
     SendMessageW(contentEdit, EM_SETMODIFY, FALSE, 0);
+    refreshTypingControls();
     selectedSnippet.clear();
     selectedEncrypted = false;
     SendMessageW(encryptSnippetCheck, BM_SETCHECK, BST_UNCHECKED, 0);
@@ -881,15 +1107,24 @@ bool promptNewSnippetName(std::wstring& name) {
 
 bool saveSnippetContents(const std::wstring& name, bool creating, bool encrypt) {
     const bool converting = !creating && encrypt != selectedEncrypted;
-    auto document = snippetdocument::Document::fromText(secure::Text::read(contentEdit));
+    snippetdocument::Document document;
+    if (!readEditorDocument(document))
+        return false;
+    std::vector<snippetvariables::Field> fields;
+    if (snippetvariables::collect(document, fields) != snippetvariables::Result::ok) {
+        showMessage(window, L"Check the variable braces and names in your text steps before saving.",
+            L"Snippet variables", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
     if (encrypt || converting) {
         const bool setup = !encryptedStore.exists() && encrypt;
         return protectedAction(window, setup ? passwords::Mode::create : passwords::Mode::unlock,
             [&](const secure::Text& password, const secure::Text& next) {
                 const auto& master = setup ? next : password;
                 if (converting)
-                    return encryptedStore.convert(name, document, master, encrypt, snippetStore);
-                return encryptedStore.save(name, document, master, !creating);
+                    return encryptedStore.convert(
+                        name, document, vaultCredentials(master), encrypt, snippetStore);
+                return encryptedStore.save(name, document, vaultCredentials(master), !creating);
             });
     }
     const auto result = snippetStore.save(name, document, !creating);
@@ -913,6 +1148,7 @@ bool saveSnippet() {
 
     selectedEncrypted = encrypt;
     selectedSnippet = name;
+    editorStructureModified = false;
     SendMessageW(contentEdit, EM_SETMODIFY, FALSE, 0);
     statusText = encrypt ? L"Encrypted snippet saved" : L"Snippet saved (unencrypted)";
     updateEditorActions();
@@ -933,6 +1169,9 @@ void newSnippet() {
     if (typing || !confirmEditorChange())
         return;
     clearProtectedEditor();
+    inlineEditor.clear();
+    editorStructureModified = snippetSettingsInitialized = false;
+    refreshTypingControls();
     selectedSnippet.clear();
     selectedEncrypted = false;
     SendMessageW(encryptSnippetCheck, BM_SETCHECK, BST_UNCHECKED, 0);
@@ -960,19 +1199,30 @@ void chooseSnippet() {
     }
     if (!confirmEditorChange())
         return;
-    secure::Text text;
-    if (!loadSnippetText(picker.name, picker.encrypt, text))
+    snippetdocument::Document document;
+    if (!loadSnippetDocument(picker.name, picker.encrypt, document))
         return;
     SendMessageW(contentEdit, EM_EMPTYUNDOBUFFER, 0, 0);
     selectedEncrypted = picker.encrypt;
     SendMessageW(encryptSnippetCheck, BM_SETCHECK, selectedEncrypted ? BST_CHECKED : BST_UNCHECKED, 0);
     selectedSnippet = picker.name;
-    SetWindowTextW(contentEdit, text.c_str());
-    text.clear();
+    setEditorDocument(std::move(document), false);
     SendMessageW(contentEdit, EM_EMPTYUNDOBUFFER, 0, 0);
     SendMessageW(contentEdit, EM_SETMODIFY, FALSE, 0);
     updateEditorActions();
-    SetFocus(contentEdit);
+    inlineEditor.focus();
+}
+
+void chooseSnippetAction(decltype(&TrackPopupMenuEx) track = &TrackPopupMenuEx) {
+    if (typing || selectedSnippet.empty())
+        return;
+    UINT choice = 0;
+    {
+        ModalScope modal;
+        choice = dialogs::commandMenu(window, manageSnippetButton, dialogStyle(), SnippetCommands, track);
+    }
+    if (dialogs::findCommand(choice, SnippetCommands))
+        SendMessageW(window, WM_COMMAND, choice, 0);
 }
 
 void renameSnippet() {
@@ -1000,7 +1250,7 @@ void renameSnippet() {
         if (selectedEncrypted) {
             if (protectedAction(
                     window, passwords::Mode::unlock, [&](const secure::Text& password, const secure::Text&) {
-                        return encryptedStore.rename(selectedSnippet, state.name, password);
+                        return encryptedStore.rename(selectedSnippet, state.name, vaultCredentials(password));
                     })) {
                 selectedSnippet = state.name;
                 updateEditorActions();
@@ -1031,7 +1281,7 @@ void deleteSnippet() {
     if (selectedEncrypted) {
         if (!protectedAction(
                 window, passwords::Mode::unlock, [&](const secure::Text& password, const secure::Text&) {
-                    return encryptedStore.remove(selectedSnippet, password);
+                    return encryptedStore.remove(selectedSnippet, vaultCredentials(password));
                 }))
             return;
     } else {
@@ -1057,19 +1307,45 @@ void stopSession() {
 void setSessionControls(bool active) {
     SetWindowTextW(typeButton, active ? L"Stop t&yping" : L"Start t&yping");
     for (HWND child : {settingsButton, snippetMenuButton, newSnippetButton, saveSnippetButton,
-             encryptSnippetCheck, scanRadio, unicodeRadio, delayEdit, initialDelayEdit})
+             encryptSnippetCheck, scanRadio, unicodeRadio, delayEdit, initialDelayEdit, snippetScopeCheck})
         EnableWindow(child, !active);
     if (selectedEncrypted || encryptionChecked())
         EnableWindow(contentEdit, !active);
     updateEditorActions();
 }
 
-void startTyping(secure::Text text, bool hideWindow, HWND target = nullptr) {
+void lockEncryptedSnippets() {
+    vaultSession.lock();
+    // Join before clearing the editor so no worker retains protected text.
+    if (typing) {
+        session.requestStop();
+        session.join();
+        KillTimer(window, SessionTimer);
+        sessionPanel.close();
+        typing = false;
+        restoreAfterTyping = false;
+        setSessionControls(false);
+    }
+    clearProtectedEditor();
+    updateVaultIndicator();
+    statusText = L"Encrypted snippets locked";
+    InvalidateRect(window, nullptr, FALSE);
+}
+
+void startDocument(snippetdocument::Document document, bool hideWindow, HWND target = nullptr) {
     if (typing) {
         stopSession();
         return;
     }
-    if (!keyboard::hasText(text)) {
+    if (!prepareDocument(document, selectedEncrypted || encryptionChecked())) {
+        clearProtectedEditor();
+        return;
+    }
+    bool hasContent = false;
+    for (const auto& action : document.actions)
+        hasContent =
+            hasContent || action.type != snippetdocument::ActionType::text || keyboard::hasText(action.text);
+    if (!hasContent) {
         clearProtectedEditor();
         SetFocus(contentEdit);
         return;
@@ -1078,7 +1354,7 @@ void startTyping(secure::Text text, bool hideWindow, HWND target = nullptr) {
     keyboard::Options options;
     options.delay = preferences.keystrokeDelay;
     options.initialDelay = preferences.initialDelay;
-    options.unicode = SendMessageW(unicodeRadio, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    options.unicode = globalUnicode;
     options.shiftEnter = preferences.shiftEnter;
     options.triggerKey = preferences.hotkeyKey;
     options.hotkeyModifiers = preferences.hotkeyModifiers;
@@ -1093,7 +1369,7 @@ void startTyping(secure::Text text, bool hideWindow, HWND target = nullptr) {
     sessionPanel.close();
     if (hideWindow)
         ShowWindow(window, SW_HIDE);
-    if (!session.start(std::move(text), options)) {
+    if (!session.start(std::move(document), options)) {
         clearProtectedEditor();
         if (hideWindow)
             ShowWindow(window, SW_SHOWNOACTIVATE);
@@ -1106,6 +1382,10 @@ void startTyping(secure::Text text, bool hideWindow, HWND target = nullptr) {
     SetTimer(window, SessionTimer, 100, nullptr);
     statusText = L"Preparing to type...";
     InvalidateRect(window, nullptr, FALSE);
+}
+
+void startTyping(secure::Text text, bool hideWindow, HWND target = nullptr) {
+    startDocument(snippetdocument::Document::fromText(std::move(text)), hideWindow, target);
 }
 
 void openSnippetSearch() {
@@ -1132,13 +1412,15 @@ void openSnippetSearch() {
             destination.restore();
         return;
     }
-    secure::Text text;
-    if (!loadSnippetText(state.ui.name, state.ui.encrypt, text, &state.bounds)) {
+    snippetdocument::Document document;
+    if (!loadSnippetDocument(state.ui.name, state.ui.encrypt, document, &state.bounds) ||
+        !prepareDocument(document, state.ui.encrypt, &state.bounds)) {
         if (GetForegroundWindow() == window)
             destination.restore();
         return;
     }
-    if (!keyboard::hasText(text)) {
+    if (document.actions.empty() ||
+        (snippetdocument::textOnly(document) && !keyboard::hasText(document.actions.front().text))) {
         showMessage(
             window, L"This saved snippet has no text to type.", L"Empty snippet", MB_OK | MB_ICONINFORMATION);
         return;
@@ -1151,7 +1433,7 @@ void openSnippetSearch() {
             L"Cannot type snippet", MB_OK | MB_ICONINFORMATION);
         return;
     }
-    startTyping(std::move(text), false, target);
+    startDocument(std::move(document), false, target);
 }
 
 void updateSession() {
@@ -1166,13 +1448,23 @@ void updateSession() {
         typing = false;
         setSessionControls(false);
         statusText = snapshot.result == keyboard::Result::completed ? L"Finished: " : L"Stopped: ";
-        statusText += std::to_wstring(snapshot.progress.completed) + L" / " +
-                      std::to_wstring(snapshot.progress.total) + L" characters";
+        statusText += snapshot.progress.sequence
+                          ? std::to_wstring(snapshot.progress.actionIndex) + L" / " +
+                                std::to_wstring(snapshot.progress.actionCount) + L" steps"
+                          : std::to_wstring(snapshot.progress.completed) + L" / " +
+                                std::to_wstring(snapshot.progress.total) + L" characters";
         if (restoreAfterTyping)
             ShowWindow(window, SW_SHOWNOACTIVATE);
         if (snapshot.result == keyboard::Result::unsupportedLayout)
             showMessage(window, L"Select an English or German keyboard layout in the target application.",
                 L"MK AutoTyper", MB_OK | MB_ICONINFORMATION);
+        else if (snapshot.result == keyboard::Result::shortcutConflict)
+            showMessage(window,
+                L"A key step matches an AutoTyper global shortcut. Change that step or choose another global shortcut in More settings. No steps were sent.",
+                L"Shortcut conflict", MB_OK | MB_ICONINFORMATION);
+        else if (snapshot.result == keyboard::Result::invalidSequence)
+            showMessage(window, L"This sequence contains invalid or unresolved steps.", L"Snippet",
+                MB_OK | MB_ICONINFORMATION);
         else if (snapshot.result == keyboard::Result::inputBlocked)
             showMessage(window,
                 L"Windows could not send all keystrokes. Run the target and AutoTyper at the same "
@@ -1202,8 +1494,8 @@ void toggleTypingShortcut() {
 }
 
 HWND control(const wchar_t* kind, const wchar_t* title, DWORD style, int id = 0, DWORD extended = 0) {
-    return CreateWindowExW(extended, kind, title, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0, window,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    return CreateWindowExW(extended, kind, title, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style, 0, 0, 0, 0,
+        window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
 }
 
 bool createControls() {
@@ -1214,7 +1506,7 @@ bool createControls() {
     if (!contentEdit)
         return false;
     SendMessageW(contentEdit, EM_SETTEXTMODE, TM_PLAINTEXT | TM_MULTILEVELUNDO | TM_MULTICODEPAGE, 0);
-    SendMessageW(contentEdit, EM_EXLIMITTEXT, 0, 1024 * 1024);
+    SendMessageW(contentEdit, EM_EXLIMITTEXT, 0, snippetdocument::MaximumTextCharacters);
     SendMessageW(contentEdit, EM_SETUNDOLIMIT, 200, 0);
     SendMessageW(contentEdit, EM_SETEVENTMASK, 0, ENM_CHANGE);
     snippetMenuButton = control(L"BUTTON", L"Saved snippets \u25be", WS_TABSTOP | BS_OWNERDRAW, SnippetMenu);
@@ -1222,8 +1514,9 @@ bool createControls() {
     saveSnippetButton = control(L"BUTTON", L"Save", WS_TABSTOP | BS_OWNERDRAW, SaveSnippet);
     encryptSnippetCheck =
         control(L"BUTTON", L"Encrypt snippet", WS_TABSTOP | BS_AUTOCHECKBOX, EncryptSnippet);
-    renameSnippetButton = control(L"BUTTON", L"Rename", WS_TABSTOP | BS_OWNERDRAW, RenameSnippet);
-    deleteSnippetButton = control(L"BUTTON", L"Delete", WS_TABSTOP | BS_OWNERDRAW, DeleteSnippet);
+    manageSnippetButton = control(L"BUTTON", L"Manage \u25be", WS_TABSTOP | BS_OWNERDRAW, SnippetManage);
+    snippetScopeCheck =
+        control(L"BUTTON", L"Custom for this snippet", WS_TABSTOP | WS_GROUP | BS_AUTOCHECKBOX, SnippetScope);
     modeLabel = control(L"STATIC", L"INPUT METHOD", SS_LEFT);
     scanRadio = control(L"BUTTON", L"&Scan-code input", WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON, ScanMode);
     unicodeRadio = control(L"BUTTON", L"&Unicode input", BS_AUTORADIOBUTTON, UnicodeMode);
@@ -1247,16 +1540,31 @@ bool createControls() {
     shortcutHint = control(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS);
     for (HWND edit : {contentEdit, delayEdit, initialDelayEdit})
         SetWindowSubclass(edit, editProc, 1, 0);
-    for (HWND button : {themeButton, typeButton, scanRadio, unicodeRadio, startupCheck, settingsButton,
-             snippetMenuButton, newSnippetButton, saveSnippetButton, encryptSnippetCheck, renameSnippetButton,
-             deleteSnippetButton})
+    for (HWND button :
+        {themeButton, typeButton, scanRadio, unicodeRadio, startupCheck, settingsButton, snippetMenuButton,
+            newSnippetButton, saveSnippetButton, encryptSnippetCheck, manageSnippetButton, snippetScopeCheck})
         SetWindowSubclass(button, buttonProc, 1, 0);
+    if (!inlineEditor.create(
+            window, instance, contentEdit, editorDocument,
+            [](HWND field) { SetWindowSubclass(field, buttonProc, 1, 0); },
+            [](bool structure) {
+                if (structure)
+                    editorStructureModified = true;
+                updateEditorActions();
+                InvalidateRect(window, nullptr, FALSE);
+            },
+            [](const wchar_t* error) {
+                statusText = error && *error ? error : L"Ready when you are";
+                InvalidateRect(window, nullptr, FALSE);
+            },
+            captureShortcutInput))
+        return false;
     SendMessageW(delayEdit, EM_SETLIMITTEXT, 5, 0);
     SendMessageW(initialDelayEdit, EM_SETLIMITTEXT, 5, 0);
     return editorLabel && modeLabel && scanRadio && unicodeRadio && modeHelp && delayLabel && delayEdit &&
            initialLabel && initialDelayEdit && startupCheck && preferencesNote && themeButton && typeButton &&
            settingsButton && snippetMenuButton && newSnippetButton && saveSnippetButton &&
-           encryptSnippetCheck && renameSnippetButton && deleteSnippetButton && statusLabel && shortcutHint;
+           encryptSnippetCheck && manageSnippetButton && snippetScopeCheck && statusLabel && shortcutHint;
 }
 
 HICON sizedIcon(int resource, int widthMetric, int heightMetric, UINT iconDpi) {
@@ -1325,6 +1633,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (wParam == SessionTimer)
             updateSession();
         return 0;
+    case WM_ACTIVATE:
+        if (LOWORD(wParam) == WA_INACTIVE)
+            inlineEditor.cancelInteraction();
+        break;
     case WM_EXITSIZEMOVE:
         persistPreferences();
         return 0;
@@ -1360,11 +1672,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         return 1;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
+    case WM_CTLCOLORLISTBOX:
     case WM_CTLCOLOREDIT: {
         HDC dc = reinterpret_cast<HDC>(wParam);
         const HWND child = reinterpret_cast<HWND>(lParam);
-        const bool field = child == delayEdit || child == initialDelayEdit;
-        const bool muted = child == modeHelp || child == preferencesNote;
+        const bool field = child == delayEdit || child == initialDelayEdit || inlineEditor.field(child) ||
+                           message == WM_CTLCOLORLISTBOX;
+        const bool muted = child == modeHelp || child == preferencesNote ||
+                           GetDlgCtrlID(child) == actioneditor::VariableHint ||
+                           GetDlgCtrlID(child) == keyselector::Hint;
         if (child == statusLabel || child == shortcutHint) {
             SetTextColor(dc, child == shortcutHint ? colors.muted : colors.text);
             SetBkColor(dc, colors.background);
@@ -1376,6 +1692,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     case WM_MEASUREITEM: {
         auto& item = *reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
+        if (dialogs::measureCommand(dialogStyle(), item, SnippetCommands) ||
+            inlineEditor.measure(dialogStyle(), item))
+            return TRUE;
         if (item.CtlType == ODT_MENU && dialogs::isThemeCommand(item.itemID)) {
             item.itemWidth = scale(192);
             item.itemHeight = scale(36);
@@ -1385,6 +1704,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     case WM_DRAWITEM: {
         const auto* item = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (dialogs::drawCommand(dialogStyle(), *item, SnippetCommands) ||
+            inlineEditor.draw(dialogStyle(), *item))
+            return TRUE;
         if (item->CtlType == ODT_MENU && dialogs::isThemeCommand(item->itemID)) {
             dialogs::drawThemeChoice(dialogStyle(), *item);
             return TRUE;
@@ -1413,18 +1735,35 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         return TRUE;
     }
+    case WM_NOTIFY:
+        if (inlineEditor.notify(*reinterpret_cast<NMHDR*>(lParam)))
+            return 0;
+        break;
     case WM_COMMAND: {
         const int id = LOWORD(wParam), notification = HIWORD(wParam);
+        if (id == actioneditor::AddStep && notification == BN_CLICKED) {
+            inlineEditor.addMenu(dialogStyle());
+            return 0;
+        }
+        if (inlineEditor.command(id, notification))
+            return 0;
         if (id == ExitCommand) {
             stopSession();
             if (confirmEditorChange())
                 DestroyWindow(hwnd);
         } else if (id == StopCommand)
             stopSession();
-        else if (id == Start && notification == BN_CLICKED)
-            startTyping(secure::Text::read(contentEdit), true);
-        else if (id == MoreSettings && notification == BN_CLICKED)
+        else if (id == LockVaultCommand) {
+            if (!dialogOpen && ((!selectedEncrypted && !encryptionChecked()) || confirmEditorChange()))
+                lockEncryptedSnippets();
+        } else if (id == Start && notification == BN_CLICKED) {
+            snippetdocument::Document document;
+            if (readEditorDocument(document))
+                startDocument(std::move(document), true);
+        } else if (id == MoreSettings && notification == BN_CLICKED)
             openSettings();
+        else if (id == SnippetManage && notification == BN_CLICKED)
+            chooseSnippetAction();
         else if (id == SnippetMenu && notification == BN_CLICKED)
             chooseSnippet();
         else if (id == NewSnippet && notification == BN_CLICKED)
@@ -1451,13 +1790,35 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 statusText = enable ? L"Startup enabled: system tray only" : L"Startup disabled";
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
+        } else if (id == SnippetScope && notification == BN_CLICKED) {
+            syncTypingControls();
+            const bool custom = SendMessageW(snippetScopeCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            if (custom && !snippetSettingsInitialized) {
+                editorDocument.typing.keystrokeDelay = preferences.keystrokeDelay;
+                editorDocument.typing.initialDelay = preferences.initialDelay;
+                editorDocument.typing.unicode = globalUnicode;
+            }
+            editorDocument.typing.overrideGlobal = custom;
+            if (custom)
+                snippetSettingsInitialized = true;
+            editorStructureModified = true;
+            refreshTypingControls();
+            updateEditorActions();
         } else if ((id == ScanMode || id == UnicodeMode) && notification == BN_CLICKED) {
+            if (editorDocument.typing.overrideGlobal) {
+                editorDocument.typing.unicode = id == UnicodeMode;
+                editorStructureModified = true;
+            } else
+                globalUnicode = id == UnicodeMode;
             SetWindowTextW(modeHelp,
                 id == ScanMode ? L"Simulates keys using the target's\nEnglish or German keyboard layout."
                                : L"Sends characters directly using\nWindows Unicode text events.");
-        } else if ((id == Delay || id == InitialDelay) && notification == EN_KILLFOCUS)
+            updateEditorActions();
+        } else if ((id == Delay || id == InitialDelay) && notification == EN_KILLFOCUS) {
+            syncTypingControls();
             persistPreferences();
-        else if (id == Content && notification == EN_CHANGE) {
+            updateEditorActions();
+        } else if (id == Content && notification == EN_CHANGE) {
             updateEditorActions();
             InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -1487,6 +1848,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             GetCursorPos(&point);
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | (typing ? 0 : MF_GRAYED), StopCommand, L"Stop typing");
+            AppendMenuW(menu, MF_STRING | (vaultSession.unlocked() && !dialogOpen ? 0 : MF_GRAYED),
+                LockVaultCommand, L"Lock encrypted snippets");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING, ExitCommand, L"Exit");
             SetForegroundWindow(hwnd);
@@ -1496,6 +1859,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         return 0;
     case WM_DESTROY:
+        closing = true;
+        inlineEditor.cancelInteraction();
+        vaultSession.lock();
         persistPreferences();
         KillTimer(hwnd, SessionTimer);
         session.requestStop();
@@ -1564,11 +1930,13 @@ int WINAPI WinMain(
             if (arguments.find("/tray") == std::string::npos)
                 ShowWindow(window,
                     arguments.find("/minimized") != std::string::npos ? SW_SHOWMINIMIZED : showCommand);
+            if (GetForegroundWindow() == window && !IsIconic(window))
+                SetFocus(contentEdit);
             MSG message = {};
             int status;
             while ((status = GetMessageW(&message, nullptr, 0, 0)) > 0) {
                 if (message.message == WM_KEYDOWN && (GetKeyState(VK_CONTROL) & 0x8000) && !dialogOpen &&
-                    !typing) {
+                    !typing && !inputCaptureActive) {
                     if (message.wParam == 'S') {
                         saveSnippet();
                         continue;

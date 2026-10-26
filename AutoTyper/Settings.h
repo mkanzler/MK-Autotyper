@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <Windows.h>
 #include "WindowPlacement.h"
 #include "Hotkey.h"
@@ -18,6 +18,7 @@ struct Preferences {
     DWORD initialDelay = 1000;
     bool showCountdown = true;
     bool shiftEnter = false;
+    bool unlockForSession = false;
     UINT hotkeyModifiers = MOD_CONTROL | MOD_ALT;
     UINT hotkeyKey = 'V';
     UINT snippetHotkeyModifiers = MOD_CONTROL | MOD_ALT;
@@ -82,6 +83,7 @@ inline Preferences load(const wchar_t* path = RegistryPath) {
     value.initialDelay = readDword(path, L"InitialDelay", 1000, 0, 60000);
     value.showCountdown = readDword(path, L"ShowCountdown", 1, 0, 1) != 0;
     value.shiftEnter = readDword(path, L"ShiftEnter", 0, 0, 1) != 0;
+    value.unlockForSession = readDword(path, L"UnlockForSession", 0, 0, 1) != 0;
     const UINT modifiers = readDword(path, L"HotkeyModifiers", MOD_CONTROL | MOD_ALT, 0, 7);
     const UINT key = readDword(path, L"HotkeyKey", 'V', 1, 254);
     if (hotkey::valid(modifiers, key)) {
@@ -115,8 +117,9 @@ inline bool save(const Preferences& value, const wchar_t* path = RegistryPath) {
         write(L"ThemeMode", static_cast<DWORD>(value.theme)) &&
         write(L"KeystrokeDelay", value.keystrokeDelay) && write(L"InitialDelay", value.initialDelay) &&
         write(L"ShowCountdown", value.showCountdown ? 1 : 0) &&
-        write(L"ShiftEnter", value.shiftEnter ? 1 : 0) && write(L"HotkeyModifiers", value.hotkeyModifiers) &&
-        write(L"HotkeyKey", value.hotkeyKey) &&
+        write(L"ShiftEnter", value.shiftEnter ? 1 : 0) &&
+        write(L"UnlockForSession", value.unlockForSession ? 1 : 0) &&
+        write(L"HotkeyModifiers", value.hotkeyModifiers) && write(L"HotkeyKey", value.hotkeyKey) &&
         write(L"SnippetHotkeyModifiers", value.snippetHotkeyModifiers) &&
         write(L"SnippetHotkeyKey", value.snippetHotkeyKey);
     const bool positionSaved =

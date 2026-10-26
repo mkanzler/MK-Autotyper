@@ -25,8 +25,8 @@ IDR_LICENSE RCDATA "../LICENSE"
 
 // Consistent release identity for Explorer, diagnostics and signing tools.
 1 VERSIONINFO
- FILEVERSION 2,0,0,0
- PRODUCTVERSION 2,0,0,0
+ FILEVERSION 2,1,0,0
+ PRODUCTVERSION 2,1,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -38,11 +38,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "MK AutoTyper\0"
-            VALUE "FileVersion", "2.0.0.0\0"
+            VALUE "FileVersion", "2.1.0.0\0"
             VALUE "InternalName", "MK-AutoTyper\0"
             VALUE "OriginalFilename", "MK-AutoTyper.exe\0"
             VALUE "ProductName", "MK AutoTyper\0"
-            VALUE "ProductVersion", "2.0.0.0\0"
+            VALUE "ProductVersion", "2.1.0.0\0"
             VALUE "LegalCopyright", "Copyright (C) 2024-2026 Marcel Kanzler.\0"
             VALUE "Comments", "User-controlled typing of text and saved snippets.\0"
         END
@@ -109,7 +109,7 @@ CAPTION "About AutoTyper"
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
     ICON            IDR_MAINFRAME,IDC_STATIC,14,14,21,20
-    LTEXT           "MK AutoTyper, Version 2.0",IDC_STATIC,42,14,114,8,SS_NOPREFIX
+    LTEXT           "MK AutoTyper, Version 2.1",IDC_STATIC,42,14,114,8,SS_NOPREFIX
     LTEXT           "Copyright (c) 2024-2026",IDC_STATIC,42,26,114,8
     DEFPUSHBUTTON   "OK",IDOK,113,41,50,14,WS_GROUP
 END

@@ -8,6 +8,13 @@ void require(bool value, const char* message) {
         throw std::runtime_error(message);
 }
 
+bool loadSnippetText(const std::wstring& name, bool encrypted, secure::Text& text) {
+    snippetdocument::Document document;
+    text.clear();
+    return loadSnippetDocument(name, encrypted, document) &&
+           snippetdocument::takeEditorText(document, text) == snippetdocument::Result::ok;
+}
+
 enum class Probe {
     picker,
     empty,
@@ -21,6 +28,9 @@ enum class Probe {
     nameCancel,
     protectedSave,
     protectedLoad,
+    sessionUnlock,
+    sessionCancel,
+    sessionPasswordChange,
     convert,
     cancelConvert
 };
@@ -385,6 +395,25 @@ void CALLBACK inspectDialog(HWND, UINT, UINT_PTR timer, DWORD) {
                 ++unlockPrompts;
             SendMessageW(dialog, WM_COMMAND, IDOK, 0);
         }
+    } else if (probe == Probe::sessionPasswordChange) {
+        const auto& state = *reinterpret_cast<passwords::State*>(GetWindowLongPtrW(dialog, DWLP_USER));
+        probePassed = state.mode == passwords::Mode::change && vaultSession.unlocked() &&
+                      !shortcut.registered() && !snippetShortcut.registered();
+        SetWindowTextW(state.oldPassword, L"native fixture password 123");
+        SetWindowTextW(state.newPassword, L"replacement fixture password 456");
+        SetWindowTextW(state.confirmation, L"replacement fixture password 456");
+        SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+    } else if (probe == Probe::sessionUnlock || probe == Probe::sessionCancel) {
+        const auto& state = *reinterpret_cast<passwords::State*>(GetWindowLongPtrW(dialog, DWLP_USER));
+        probePassed = state.sessionUnlock && state.mode == passwords::Mode::unlock &&
+                      !shortcut.registered() && !snippetShortcut.registered();
+        ++unlockPrompts;
+        if (probe == Probe::sessionCancel)
+            SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+        else {
+            SetWindowTextW(state.oldPassword, L"native fixture password 123");
+            SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+        }
     } else if (probe == Probe::convert || probe == Probe::cancelConvert) {
         const auto& state = *reinterpret_cast<passwords::State*>(GetWindowLongPtrW(dialog, DWLP_USER));
         probePassed =
@@ -528,6 +557,19 @@ void CALLBACK inspectDialog(HWND, UINT, UINT_PTR timer, DWORD) {
         SendMessageW(
             snippetField, HKM_SETHOTKEY, MAKEWORD(VK_F23, HOTKEYF_CONTROL | HOTKEYF_ALT | HOTKEYF_SHIFT), 0);
         probePassed = probePassed && caretMatches(field) && caretMatches(snippetField);
+        const HWND unlock = GetDlgItem(dialog, 510);
+        probePassed = probePassed && unlock &&
+                      (SendMessageW(unlock, BM_GETCHECK, 0, 0) ==
+                          (preferences.unlockForSession ? BST_CHECKED : BST_UNCHECKED));
+        SendMessageW(unlock, BM_CLICK, 0, 0);
+        RECT lockBounds{}, footer{}, settingsClient{};
+        GetWindowRect(GetDlgItem(dialog, 511), &lockBounds);
+        GetWindowRect(GetDlgItem(dialog, IDOK), &footer);
+        GetClientRect(dialog, &settingsClient);
+        MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&footer), 2);
+        MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&lockBounds), 2);
+        probePassed = probePassed && lockBounds.bottom < footer.top && footer.bottom <= settingsClient.bottom;
+
         SendMessageW(dialog, WM_COMMAND, probe == Probe::shortcutApply ? IDOK : IDCANCEL, 0);
     }
 }
@@ -734,12 +776,17 @@ int main() {
             snippetShortcut.replace(window, preferences.snippetHotkeyModifiers, preferences.snippetHotkeyKey),
             "Snippet fixture shortcut unavailable");
         for (Probe value : {Probe::shortcutCancel, Probe::shortcutApply}) {
+            const bool wasSessionMode = preferences.unlockForSession;
             startProbe(value);
             openSettings();
             require(probePassed && shortcut.registered() && snippetShortcut.registered(),
                 "Shortcut capture failed or registrations were not restored");
             require(preferences.hotkeyKey == VK_F24, "Cancelling shortcut capture changed preferences");
+            require(preferences.unlockForSession ==
+                        (value == Probe::shortcutApply ? !wasSessionMode : wasSessionMode),
+                "Session unlock setting ignored Apply or Cancel");
         }
+        preferences.unlockForSession = false;
         std::puts("Checking nested validation...");
         fflush(stdout);
         SetTimer(nullptr, 0, 20, inspectInvalidShortcut);
@@ -823,6 +870,49 @@ int main() {
         require(GetWindowTextLengthW(contentEdit) == 0 && !SendMessageW(contentEdit, EM_CANUNDO, 0, 0) &&
                     !selectedEncrypted && !encryptionChecked(),
             "Decrypted editor or undo history survived typing cancellation");
+        preferences.unlockForSession = true;
+        require(!vaultSession.unlocked(), "Enabling session mode unlocked without a password");
+        const int originalPrompts = unlockPrompts;
+        secure::Text unlockedText;
+        startProbe(Probe::sessionCancel);
+        require(!loadSnippetText(L"Protected fixture", true, unlockedText) && probePassed &&
+                    !vaultSession.unlocked() && unlockedText.empty(),
+            "Cancelling the first session unlock exposed content");
+        startProbe(Probe::sessionUnlock);
+        require(loadSnippetText(L"Protected fixture", true, unlockedText) && probePassed &&
+                    vaultSession.unlocked() &&
+                    std::wstring(unlockedText.data(), unlockedText.size()) == privateFixture,
+            "First-use unlock failed");
+        unlockedText.clear();
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            require(loadSnippetText(L"Protected fixture", true, unlockedText) && !unlockedText.empty(),
+                "Session reload requested a password or failed");
+            unlockedText.clear();
+        }
+        require(
+            unlockPrompts == originalPrompts + 2, "Session mode requested more than one accepted password");
+        SetWindowTextW(contentEdit, privateFixture.c_str());
+        selectedEncrypted = true;
+        SendMessageW(encryptSnippetCheck, BM_SETCHECK, BST_CHECKED, 0);
+        lockEncryptedSnippets();
+        require(!vaultSession.unlocked() && GetWindowTextLengthW(contentEdit) == 0 &&
+                    !SendMessageW(contentEdit, EM_CANUNDO, 0, 0),
+            "Manual session lock retained decrypted editor content or undo");
+        startProbe(Probe::sessionUnlock);
+        require(loadSnippetText(L"Protected fixture", true, unlockedText) && probePassed &&
+                    vaultSession.unlocked(),
+            "A manually locked session could not unlock again");
+        unlockedText.clear();
+        startProbe(Probe::sessionPasswordChange);
+        changeMasterPassword(window);
+        require(probePassed && vaultSession.unlocked() &&
+                    loadSnippetText(L"Protected fixture", true, unlockedText),
+            "Changing the master password skipped authentication or failed to replace the session key");
+        unlockedText.clear();
+        startProbe(Probe::shortcutApply);
+        openSettings();
+        require(probePassed && !preferences.unlockForSession && !vaultSession.unlocked(),
+            "Disabling the setting retained the session key");
         require(DeleteFileW((encryptedRoot + L"\\Encrypted.dat").c_str()) &&
                     DeleteFileW(snippetStore.path().c_str()) && RemoveDirectoryW(encryptedRoot.c_str()),
             "Encrypted UI fixture cleanup failed");

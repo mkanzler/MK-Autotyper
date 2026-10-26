@@ -31,9 +31,17 @@ cl /nologo /EHsc /W4 /WX /std:c++14 /DUNICODE /D_UNICODE "$PSScriptRoot\Encrypte
 if errorlevel 1 exit /b 1
 "$build\EncryptedTests.exe"
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /W4 /WX /std:c++14 /DUNICODE /D_UNICODE "$PSScriptRoot\VaultSessionTests.cpp" /Fe:"$build\VaultSessionTests.exe" /Fo:"$build\VaultSessionTests.obj" user32.lib
+if errorlevel 1 exit /b 1
+"$build\VaultSessionTests.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /W4 /WX /std:c++14 /DUNICODE /D_UNICODE "$PSScriptRoot\UiTests.cpp" /Fe:"$build\UiTests.exe" /Fo:"$build\UiTests.obj" user32.lib gdi32.lib shell32.lib /link /SUBSYSTEM:CONSOLE
 if errorlevel 1 exit /b 1
 "$build\UiTests.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /W4 /WX /std:c++14 /DUNICODE /D_UNICODE "$PSScriptRoot\ActionUiTests.cpp" /Fe:"$build\ActionUiTests.exe" /Fo:"$build\ActionUiTests.obj" user32.lib gdi32.lib shell32.lib /link /SUBSYSTEM:CONSOLE
+if errorlevel 1 exit /b 1
+"$build\ActionUiTests.exe"
 "@ | Set-Content -LiteralPath $command -Encoding ascii
 & $env:ComSpec /d /c $command
 if ($LASTEXITCODE) { throw "UI/settings tests failed ($LASTEXITCODE)." }

@@ -39,6 +39,11 @@ struct KeyStroke {
     bool extended = false;
 };
 
+struct TypingSettings {
+    bool overrideGlobal = false, unicode = false;
+    DWORD keystrokeDelay = 10, initialDelay = 1000;
+};
+
 // Actions describe intent. Storage never sends input or interprets commands in text.
 struct Action {
     Action() = default;
@@ -87,6 +92,8 @@ struct Document {
     Document& operator=(Document&&) noexcept = default;
 
     std::vector<Action> actions;
+    TypingSettings typing;
+    bool expandVariables = false;
 
     static Document fromText(secure::Text value) {
         Document document;
@@ -96,6 +103,8 @@ struct Document {
 
     void clear() {
         actions.clear();
+        typing = TypingSettings{};
+        expandVariables = false;
     }
 };
 
@@ -115,6 +124,9 @@ inline bool validText(const secure::Text& text) {
 inline Result validate(const Document& document) {
     if (document.actions.size() > MaximumActions)
         return Result::tooLarge;
+    if (document.typing.keystrokeDelay < 2 || document.typing.keystrokeDelay > 60000 ||
+        document.typing.initialDelay > 60000)
+        return Result::invalid;
     size_t characters = 0;
     for (const auto& action : document.actions) {
         if (action.type == ActionType::text) {
@@ -145,13 +157,16 @@ inline Result validate(const Document& document) {
     return Result::ok;
 }
 
-// The existing editor cannot represent key/delay actions. Never flatten them or
-// return partial text: that would allow a later Save to destroy those actions.
+// Text-only convenience callers cannot represent richer documents. Never
+// flatten actions or metadata: a later Save could otherwise destroy them.
 inline Result takeEditorText(Document& document, secure::Text& text) {
     text.clear();
     const auto result = validate(document);
     if (result != Result::ok)
         return result;
+    if (document.expandVariables || document.typing.overrideGlobal || document.typing.unicode ||
+        document.typing.keystrokeDelay != 10 || document.typing.initialDelay != 1000)
+        return Result::notText;
     if (document.actions.empty())
         return Result::ok;
     if (document.actions.size() != 1 || document.actions.front().type != ActionType::text)
@@ -159,5 +174,25 @@ inline Result takeEditorText(Document& document, secure::Text& text) {
     text = std::move(document.actions.front().text);
     document.clear();
     return Result::ok;
+}
+
+inline bool textOnly(const Document& document) {
+    return document.actions.empty() ||
+           (document.actions.size() == 1 && document.actions.front().type == ActionType::text);
+}
+
+inline Document clone(const Document& source) {
+    Document copy;
+    copy.typing = source.typing;
+    copy.expandVariables = source.expandVariables;
+    for (const auto& action : source.actions) {
+        Action value;
+        value.type = action.type;
+        value.text = secure::Text(action.text.data(), action.text.size());
+        value.key = action.key;
+        value.milliseconds = action.milliseconds;
+        copy.actions.push_back(std::move(value));
+    }
+    return copy;
 }
 } // namespace snippetdocument

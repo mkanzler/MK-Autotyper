@@ -8,13 +8,22 @@ MK AutoTyper is one native Win32 executable. Small components live in headers so
 | --- | --- |
 | `AutoTyper.cpp` | Main window, native controls and painting, editor state, tray commands, and connecting user actions to components. Start at `WinMain`, then `windowProc`. |
 | `KeyboardInput.h` | English/German character mapping, scan-code/Unicode events, normalization, delays, cancellation and input cleanup. |
-| `TypingSession.h` | One background typing job and synchronized progress. Owns the job's text and worker lifetime. |
+| `TypingSession.h` | One background typing job and synchronized progress. Owns the job's text or action document and worker lifetime. |
 | `TypingTarget.h` | Capturing and restoring the destination window. |
 | `Hotkey.h` | Shortcut validation, labels, registration ownership and hotkey-control caret behavior. |
 | `SnippetDocument.h` | Move-only action model, key/modifier identifiers, bounds, validation and text-editor compatibility boundary. |
+| `ActionEditor.h` | Card editing, native editor reuse, content sizing, variables and document synchronization. |
+| `StepFlow.h` | Scrollable numbered cards, visible-header virtualization, expansion, drag/drop, insertion feedback and keyboard navigation. |
+| `KeySelector.h` | Searchable friendly key names, modifier switches and shortcut capture with application hotkeys paused. |
+| `ControlLayout.h` | Batched sibling positioning without copying old pixels, followed by parent/child invalidation. |
+| `CommandMenu.h` | Shared themed command menus with native labels and keyboard navigation. |
+| `ActionPresentation.h` | Bounded key labels and numeric input helpers shared by the editor. |
+| `SnippetVariables.h` | Bounded template scanning, unique fields and literal substitution in wiping buffers. |
+| `VariableDialog.h` | Four-field pages, masked encrypted values and field-control cleanup. |
 | `SnippetCodec.h` | Strict, bounded JSON document encoding/decoding in wiping buffers. |
 | `SnippetStore.h` | Unicode display names, one UTF-8 JSON collection, bounded parsing, serialized writers and atomic replacement. |
 | `EncryptedSnippets.h` | Bounded binary parsing, Windows CNG encryption, authenticated storage, conversions and master-password changes. |
+| `VaultSession.h` | UI-owned session key protected with Windows memory encryption; explicit locking and temporary key restoration. |
 | `SecureMemory.h` | Move-only buffers and text, wiping, and temporary string guards. |
 | `AppDialogs.h` | Shared appearance, themed messages/confirmations, native theme dropdown drawing/resources, snippet picker, name dialog and preferences dialog. |
 | `PasswordDialog.h` | Masked password entry, confirmation, retry and control cleanup. |
@@ -27,14 +36,16 @@ MK AutoTyper is one native Win32 executable. Small components live in headers so
 
 ## Important flows
 
-- **Editor typing:** the main window reads a `secure::Text`, captures options and starts `typing_session::Session`. The worker calls the keyboard runner; the UI polls progress. Cancellation joins the worker before teardown. The worker never reads native UI controls.
-- **Shortcut snippets:** capture the foreground target, show `snippetsearch`, load the selected saved content (prompting for a password when encrypted), restore the target, and start a session with the captured preferences. The editor is independent of this saved-content lookup.
-- **Saving:** `saveSnippet` coordinates the operation. `promptNewSnippetName` handles name validation/retries; `saveSnippetContents` reads the editor once into a one-text-action document and handles storage or conversion. Only a successful save updates the editor's saved selection and clears its modified state.
-- **Encrypted storage:** each content operation creates a local vault and key, calls `openAuthenticatedVault`, performs its operation, and destroys the key on return. Only creating an encrypted destination may create a missing vault. `list` intentionally reads visible names without a password; content operations authenticate the complete catalog before using it.
+- **Editor typing:** the main window reads the complete editor document, resolves opt-in fields, captures options and starts `typing_session::Session`. The worker calls the keyboard runner; the UI polls progress. Cancellation joins the worker before teardown. The worker never reads native UI controls.
+- **Shortcut snippets:** capture the foreground target, show `snippetsearch`, load the selected saved content (prompting for an encrypted snippet unless the optional session is unlocked), prompt for any fields, restore the target, and start a session using snippet overrides or the captured global preferences. The editor is independent of this saved-content lookup.
+- **Saving:** `saveSnippet` coordinates the operation. `promptNewSnippetName` handles name validation/retries; `saveSnippetContents` reads the complete editor document after committing the currently selected inline step and handles storage or conversion. Only a successful save updates the editor's saved selection and clears its modified state.
+- **Encrypted storage:** each content operation creates a local vault and key, calls `openAuthenticatedVault`, performs its operation, and destroys the key on return. The optional `VaultSession` supplies a protected derived key through borrowed `Credentials`; restored keys and CNG handles remain local to each operation. `Store::unlock` authenticates the complete vault before retaining a key. Only creating an encrypted destination may create a missing vault. `list` intentionally reads visible names without a password; content operations authenticate the complete catalog before using it.
 
 ## State and ownership rules
 
 Main-window state in `AutoTyper.cpp` belongs to the UI thread and stays in its anonymous namespace. The session class owns cross-thread state and synchronization. Modal guards block global typing/search starts. Preferences and password entry also pause shortcut registrations where keyboard capture requires it, then restore the previous registrations when closing.
+
+The card editor borrows the UI-owned document. `ActionEditor::Editor` commits the shared native field before changing cards, folding or reordering; invalid values leave the document unchanged. Reusing the current card does not commit, so its menu can still remove unfinished input. Text limits apply across all cards. Its text-height caches store unclamped pixel heights; only the displayed height is capped to the viewport. `stepflow::View` owns header windows, scrolling and drag state. A drag changes action order only on a valid drop. Hidden headers are recreated as needed; the selected native editor is retained.
 
 `Preferences::theme` stores the user's Windows/Light/Dark choice. `darkTheme` in the main window is the resolved palette, not a second saved preference. New settings default to Windows; `Settings.h` migrates an older explicit `DarkTheme` choice only if `ThemeMode` is absent. Windows appearance notifications update the main window and send the synchronous `dialogs::ThemeChanged` message to open dialogs. Each dialog rebuilds its own brushes without recreating its input controls or clearing the user's entries. App messages go through `showMessage` so the modal guard also blocks global clipboard/snippet starts.
 
@@ -42,7 +53,7 @@ Main-window state in `AutoTyper.cpp` belongs to the UI thread and stays in its a
 
 `selectedEncrypted` describes the **saved source**. The encryption checkbox describes the **pending destination on Save**. They may differ while editing; do not update the source flag before storage succeeds. This distinction drives conversion, unsaved-change prompts and protected-editor cleanup.
 
-Passwords and decrypted text must stay in `secure::Text`/`secure::Buffer` whenever possible. Do not introduce password caches, log secret values, capture plaintext in background lambdas, or copy it into settings. Clear native password controls and undo buffers before executing the protected action. Clear protected editor text and undo history when the typing attempt ends, stops or fails. Windows/control limitations are described in [security and storage](security.md#memory-lifetime).
+Passwords and decrypted text must stay in `secure::Text`/`secure::Buffer` whenever possible. Do not introduce password caches, log secret values, capture plaintext in background lambdas, or copy it into settings. Clear native password controls and undo buffers before executing the protected action. Clear protected editor text, retained action documents, key capture/search fields and undo history when the typing attempt ends, stops or fails. Windows/control limitations are described in [security and storage](security.md#memory-lifetime).
 
 Storage updates write and flush a temporary destination before replacement. Plain/encrypted conversion spans two files, so preserve its explicit rollback behavior. The active files are `%LOCALAPPDATA%\MK-AutoTyper\Snippets.json` and `Encrypted.dat`, with document schema version 1 and container marker `MKATVAUL`. No name is used as a filename; display names live in the collection/vault records. Future schema/container changes must be explicit; do not change password derivation as a side effect of a document feature. See [snippet-format.md](snippet-format.md) for the format, current GUI boundary, and phased action editor/runner plan.
 
@@ -55,4 +66,4 @@ Storage updates write and flush a temporary destination before replacement. Plai
 
 From a Visual Studio developer shell, format a changed file with `clang-format -i <file>` and check it with `clang-format --dry-run --Werror <file>`. The formatter is a development tool, not an application dependency.
 
-Run both test scripts documented in [building.md](building.md) after behavior refactors. The keyboard/runtime suite avoids desktop injection; the UI/storage suite uses temporary files and isolated settings. Tests compile with `/W4 /WX`. Build both x64 and Win32 Release configurations before distributing changes. Encryption changes require the tampering, password-change, conversion and cleanup regression tests, not only a successful encrypt/decrypt round trip.
+Run both test scripts documented in [building.md](building.md) after behavior refactors. The keyboard/runtime suite avoids desktop injection; the UI/storage suite uses temporary files and isolated settings. Tests compile with `/W4 /WX`. Build both x64 and x86 Release configurations before distributing changes. Encryption changes require the tampering, password-change, conversion and cleanup regression tests, not only a successful encrypt/decrypt round trip.

@@ -21,6 +21,11 @@ inline std::wstring summary(const typing_session::Snapshot& value) {
         return L"Starting in " + duration(p.remaining);
     if (p.stage == keyboard::Stage::waitingForKeys)
         return L"Release shortcut keys to continue";
+    if (p.stage == keyboard::Stage::pause)
+        return L"Pause: " + duration(p.remaining) + L" left";
+    if (p.sequence)
+        return L"Step " + std::to_wstring(std::min(p.actionIndex + 1, p.actionCount)) + L" / " +
+               std::to_wstring(p.actionCount);
     std::wstring result = std::to_wstring(p.completed) + L" / " + std::to_wstring(p.total) + L" characters";
     if (p.completed && p.completed < p.total)
         result +=
